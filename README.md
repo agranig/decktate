@@ -116,14 +116,17 @@ If Decktate is killed without a chance to clean up, the hooks stay behind;
 that is harmless and the next start replaces them. To manage them yourself,
 set `auto_hooks: false` and use `uv run decktate install` / `uninstall`.
 
-### As a Dock app (macOS)
+### As a menu bar app (macOS)
 
     uv run decktate install-app   # creates ~/Applications/Decktate.app
 
-Open it and keep it in the Dock. The icon shows a badge with the number of
-sessions that need you; its menu lists the sessions and installs or removes
-the hooks. Microphone and automation permissions are then asked for
-"Decktate" rather than for your terminal.
+Open it: a small key-grid icon appears in the menu bar at the top right
+(there is no Dock icon). A number next to it says how many sessions need
+you. Its menu lists the sessions (click one to talk to it), installs or
+removes the hooks, opens the settings folder and quits. To start it at
+login, add it under System Settings > General > Login Items. Microphone and
+automation permissions are asked for "Decktate" rather than for your
+terminal.
 
 ### Without a deck
 
