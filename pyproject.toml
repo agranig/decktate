@@ -1,0 +1,35 @@
+[project]
+name = "decktate"
+version = "0.1.0"
+description = "A Stream Deck control surface for Claude Code on macOS: status, spoken prompts, approvals, menus and dictation"
+readme = "README.md"
+authors = [
+    { name = "Andreas Granig", email = "andreas@granig.com" }
+]
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "numpy>=2.5.5",
+    "pillow>=13.0.0",
+    "pyobjc-framework-cocoa>=13.0",
+    "pyyaml>=6.0.3",
+    "sounddevice>=0.5.6",
+    "streamdeck>=0.10.0",
+    "websockets>=17.4",
+]
+
+[project.scripts]
+decktate = "decktate:main"
+
+[build-system]
+requires = ["uv_build>=0.11.21,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

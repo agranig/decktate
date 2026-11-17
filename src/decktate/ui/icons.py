@@ -1,0 +1,223 @@
+"""Line pictograms, drawn with Pillow primitives on the supersampled canvas.
+
+Each icon draws inside a square of side `s` centred on (cx, cy); `w` is the
+stroke width. All coordinates are already in supersampled pixels.
+"""
+
+from __future__ import annotations
+
+import math
+
+from PIL import ImageDraw
+
+
+def rline(d: ImageDraw.ImageDraw, pts, colour, w):
+    """Polyline with round caps and joins."""
+    d.line(pts, fill=colour, width=int(w), joint="curve")
+    r = w / 2
+    for x, y in pts:
+        d.ellipse([x - r, y - r, x + r, y + r], fill=colour)
+
+
+def arc(d, cx, cy, r, a0, a1, colour, w):
+    """Arc with round caps; angles in degrees, 0 = 12 o'clock, clockwise."""
+    if a1 - a0 >= 359.9:
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=colour, width=int(w))
+        return
+    d.arc([cx - r, cy - r, cx + r, cy + r], a0 - 90, a1 - 90, fill=colour, width=int(w))
+    rr = r - w / 2
+    for a in (a0, a1):
+        x, y = cx + rr * math.sin(math.radians(a)), cy - rr * math.cos(math.radians(a))
+        d.ellipse([x - w / 2, y - w / 2, x + w / 2, y + w / 2], fill=colour)
+
+
+def _chevron(dx, dy):
+    def draw(d, cx, cy, s, c, w):
+        h = s * 0.32
+        if dx:
+            rline(d, [(cx - dx * h * 0.5 + dx * h, cy - h), (cx - dx * h * 0.5, cy), (cx - dx * h * 0.5 + dx * h, cy + h)], c, w * 1.25)
+        else:
+            rline(d, [(cx - h, cy - dy * h * 0.5 + dy * h), (cx, cy - dy * h * 0.5), (cx + h, cy - dy * h * 0.5 + dy * h)], c, w * 1.25)
+    return draw
+
+
+def _fail(d, cx, cy, s, c, w):
+    r = s * 0.46
+    arc(d, cx, cy, r, 0, 360, c, w)
+    k = s * 0.16
+    rline(d, [(cx - k, cy - k), (cx + k, cy + k)], c, w)
+    rline(d, [(cx + k, cy - k), (cx - k, cy + k)], c, w)
+
+
+def _pass(d, cx, cy, s, c, w):
+    r = s * 0.46
+    arc(d, cx, cy, r, 0, 360, c, w)
+    rline(d, [(cx - s * 0.2, cy + s * 0.01), (cx - s * 0.05, cy + s * 0.16), (cx + s * 0.21, cy - s * 0.14)], c, w)
+
+
+def _running(d, cx, cy, s, c, w):
+    arc(d, cx, cy, s * 0.44, 40, 320, c, w)
+    k = s * 0.13
+    d.polygon([(cx - k * 0.8, cy - k * 1.3), (cx + k * 1.4, cy), (cx - k * 0.8, cy + k * 1.3)], fill=c)
+
+
+def _ffwd(d, cx, cy, s, c, w):
+    """Two triangles pointing right, as Claude Code shows for "accept edits on" / "auto mode on"."""
+    k = s * 0.3
+    for x in (cx - k * 0.95, cx + k * 0.35):
+        pts = [(x - k * 0.45, cy - k), (x + k * 0.75, cy), (x - k * 0.45, cy + k)]
+        d.polygon(pts, fill=c)
+        rline(d, pts + pts[:1], c, w * 0.7)
+
+
+def _pause(d, cx, cy, s, c, w):
+    """Two bars, as Claude Code shows for "plan mode on"."""
+    k = s * 0.3
+    for x in (cx - k * 0.55, cx + k * 0.55):
+        d.rounded_rectangle([x - k * 0.3, cy - k, x + k * 0.3, cy + k], radius=k * 0.18, fill=c)
+
+
+def _stop(d, cx, cy, s, c, w):
+    k = s * 0.3
+    d.rounded_rectangle([cx - k, cy - k, cx + k, cy + k], radius=k * 0.3, fill=c)
+
+
+def _warn(d, cx, cy, s, c, w):
+    h = s / 2
+    rline(d, [(cx, cy - h * 0.85), (cx + h * 0.95, cy + h * 0.75), (cx - h * 0.95, cy + h * 0.75), (cx, cy - h * 0.85)], c, w)
+    rline(d, [(cx, cy - h * 0.3), (cx, cy + h * 0.2)], c, w)
+    d.ellipse([cx - w * 0.7, cy + h * 0.45 - w * 0.7, cx + w * 0.7, cy + h * 0.45 + w * 0.7], fill=c)
+
+
+def _chart(d, cx, cy, s, c, w):
+    h = s / 2
+    rline(d, [(cx - h * 0.9, cy + h * 0.5), (cx - h * 0.35, cy - h * 0.1), (cx + h * 0.1, cy + h * 0.25),
+              (cx + h * 0.9, cy - h * 0.7)], c, w)
+    rline(d, [(cx - h * 0.9, cy + h * 0.9), (cx + h * 0.9, cy + h * 0.9)], c, w * 0.7)
+
+
+def _dots(d, cx, cy, s, c, w):
+    for i in (-1, 0, 1):
+        x = cx + i * s * 0.3
+        d.ellipse([x - w * 1.1, cy - w * 1.1, x + w * 1.1, cy + w * 1.1], fill=c)
+
+
+def _mic(d, cx, cy, s, c, w):
+    h = s / 2
+    d.rounded_rectangle([cx - h * 0.32, cy - h * 0.9, cx + h * 0.32, cy + h * 0.15], radius=h * 0.32, outline=c, width=int(w))
+    arc(d, cx, cy - h * 0.05, h * 0.62, 90, 270, c, w)
+    rline(d, [(cx, cy + h * 0.55), (cx, cy + h * 0.9)], c, w)
+    rline(d, [(cx - h * 0.35, cy + h * 0.9), (cx + h * 0.35, cy + h * 0.9)], c, w)
+
+
+def _speaker(d, cx, cy, s, c, w):
+    h = s / 2
+    pts = [(cx - h * 0.85, cy - h * 0.28), (cx - h * 0.4, cy - h * 0.28), (cx + h * 0.05, cy - h * 0.7),
+           (cx + h * 0.05, cy + h * 0.7), (cx - h * 0.4, cy + h * 0.28), (cx - h * 0.85, cy + h * 0.28),
+           (cx - h * 0.85, cy - h * 0.28)]
+    rline(d, pts, c, w)
+    arc(d, cx + h * 0.05, cy, h * 0.42, 45, 135, c, w)
+    arc(d, cx + h * 0.05, cy, h * 0.8, 50, 130, c, w)
+
+
+def _mute(d, cx, cy, s, c, w):
+    h = s / 2
+    pts = [(cx - h * 0.85, cy - h * 0.28), (cx - h * 0.4, cy - h * 0.28), (cx + h * 0.05, cy - h * 0.7),
+           (cx + h * 0.05, cy + h * 0.7), (cx - h * 0.4, cy + h * 0.28), (cx - h * 0.85, cy + h * 0.28),
+           (cx - h * 0.85, cy - h * 0.28)]
+    rline(d, pts, c, w)
+    rline(d, [(cx + h * 0.4, cy - h * 0.3), (cx + h * 0.9, cy + h * 0.3)], c, w)
+    rline(d, [(cx + h * 0.9, cy - h * 0.3), (cx + h * 0.4, cy + h * 0.3)], c, w)
+
+
+def _check(d, cx, cy, s, c, w):
+    rline(d, [(cx - s * 0.36, cy + s * 0.02), (cx - s * 0.1, cy + s * 0.28), (cx + s * 0.38, cy - s * 0.26)], c, w * 1.5)
+
+
+def _cross(d, cx, cy, s, c, w):
+    k = s * 0.3
+    rline(d, [(cx - k, cy - k), (cx + k, cy + k)], c, w * 1.5)
+    rline(d, [(cx + k, cy - k), (cx - k, cy + k)], c, w * 1.5)
+
+
+def _shield(d, cx, cy, s, c, w):
+    h = s / 2
+    rline(d, [(cx, cy - h * 0.9), (cx + h * 0.75, cy - h * 0.55), (cx + h * 0.75, cy + h * 0.05), (cx, cy + h * 0.9),
+              (cx - h * 0.75, cy + h * 0.05), (cx - h * 0.75, cy - h * 0.55), (cx, cy - h * 0.9)], c, w)
+    rline(d, [(cx - h * 0.3, cy - h * 0.02), (cx - h * 0.05, cy + h * 0.22), (cx + h * 0.34, cy - h * 0.22)], c, w)
+
+
+def _slash(d, cx, cy, s, c, w):
+    rline(d, [(cx + s * 0.18, cy - s * 0.42), (cx - s * 0.18, cy + s * 0.42)], c, w * 1.4)
+
+
+def _gear(d, cx, cy, s, c, w):
+    """A cog: the outline of a wheel with six flat-topped teeth, and the hole in the middle."""
+    teeth, outer, inner = 6, s * 0.5, s * 0.37
+    pts = []
+    for i in range(teeth):
+        mid = i * 360 / teeth
+        # root -> flank up -> flat tooth top -> flank down -> root (arc between teeth)
+        for a, r in ((mid - 17, inner), (mid - 11, outer), (mid + 11, outer), (mid + 17, inner)):
+            pts.append((cx + math.sin(math.radians(a)) * r, cy - math.cos(math.radians(a)) * r))
+        for a in range(int(mid + 22), int(mid + 360 / teeth - 17), 5):
+            pts.append((cx + math.sin(math.radians(a)) * inner, cy - math.cos(math.radians(a)) * inner))
+    rline(d, pts + [pts[0]], c, w * 0.85)
+    arc(d, cx, cy, s * 0.15, 0, 360, c, w * 0.85)
+
+
+def _sun(d, cx, cy, s, c, w):
+    """Brightness: a circle with rays."""
+    r = s * 0.2
+    arc(d, cx, cy, r, 0, 360, c, w)
+    for i in range(8):
+        a = math.radians(i * 45)
+        rline(d, [(cx + math.sin(a) * r * 1.65, cy - math.cos(a) * r * 1.65),
+                  (cx + math.sin(a) * r * 2.3, cy - math.cos(a) * r * 2.3)], c, w)
+
+
+def _voice(d, cx, cy, s, c, w):
+    """The speaking voice: a speech bubble with three dots."""
+    h = s / 2
+    d.rounded_rectangle([cx - h * 0.95, cy - h * 0.75, cx + h * 0.95, cy + h * 0.45], radius=h * 0.32, outline=c, width=int(w))
+    d.polygon([(cx - h * 0.45, cy + h * 0.4), (cx - h * 0.55, cy + h * 0.95), (cx + h * 0.05, cy + h * 0.4)], fill=c)
+    for dx in (-0.42, 0.0, 0.42):
+        d.ellipse([cx + dx * h - w * 0.75, cy - h * 0.15 - w * 0.75, cx + dx * h + w * 0.75, cy - h * 0.15 + w * 0.75], fill=c)
+
+
+def _send(d, cx, cy, s, c, w):
+    h = s / 2
+    rline(d, [(cx - h * 0.85, cy - h * 0.7), (cx + h * 0.9, cy), (cx - h * 0.85, cy + h * 0.7), (cx - h * 0.45, cy),
+              (cx - h * 0.85, cy - h * 0.7)], c, w)
+    rline(d, [(cx - h * 0.45, cy), (cx + h * 0.2, cy)], c, w)
+
+
+def _question(d, cx, cy, s, c, w):
+    h = s / 2
+    arc(d, cx, cy - h * 0.35, h * 0.42, 270, 495, c, w * 1.2)
+    rline(d, [(cx + h * 0.02, cy + h * 0.02), (cx, cy + h * 0.32)], c, w * 1.2)
+    d.ellipse([cx - w, cy + h * 0.68 - w, cx + w, cy + h * 0.68 + w], fill=c)
+
+
+def _hand(d, cx, cy, s, c, w):
+    """Manual mode: a raised hand (you decide)."""
+    h = s / 2
+    for i, top in enumerate((-0.55, -0.85, -0.9, -0.7)):
+        x = cx + (i - 1.5) * h * 0.3
+        rline(d, [(x, cy + h * 0.1), (x, cy + top * h)], c, w * 1.15)
+    rline(d, [(cx - h * 0.45, cy + h * 0.1), (cx - h * 0.45, cy + h * 0.55), (cx - h * 0.1, cy + h * 0.9),
+              (cx + h * 0.35, cy + h * 0.9), (cx + h * 0.45, cy + h * 0.5), (cx + h * 0.45, cy + h * 0.1)], c, w)
+
+
+ICONS = {
+    "mic": _mic, "speaker": _speaker, "mute": _mute, "voice": _voice, "send": _send,
+    "check": _check, "cross": _cross, "stop": _stop, "shield": _shield, "question": _question,
+    "pass": _pass, "fail": _fail, "warn": _warn, "running": _running, "dots": _dots,
+    "hand": _hand, "ffwd": _ffwd, "pause": _pause,
+    "gear": _gear, "sun": _sun, "slash": _slash, "chart": _chart,
+    "back": _chevron(1, 0), "up": _chevron(0, 1), "down": _chevron(0, -1),
+}
+
+
+def draw(d: ImageDraw.ImageDraw, name: str, cx: float, cy: float, s: float, colour, w: float) -> None:
+    ICONS[name](d, cx, cy, s, colour, w)
