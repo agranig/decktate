@@ -143,11 +143,17 @@ Speech is optional and works in steps:
 
 Put the keys into `~/.config/decktate/.env`. Microphone and speaker are
 detected at runtime: `uv run decktate devices` lists them, and they can be
-switched on the deck (the settings key) together with voice, language
-(English, German, mixed) and brightness. The quieter and louder keys change
-the computer's own output volume. Talk speed has its own two
-keys there, faster and slower, in steps of 0.05 (default 1.2x); each change
-reads out a sample at the new speed.
+switched on the deck. The settings key opens one key per topic, each
+showing what is set; tap one for its page:
+
+| Topic | On its page |
+| --- | --- |
+| Sound | speaker, quieter / louder (the computer's own output volume), test |
+| Microphone | microphone, language (English, German, mixed), test |
+| Voice | voice, talk speed slower / faster in steps of 0.05 (default 1.2x, each change reads out a sample), and whether requests and answers are read out |
+| Display | brightness |
+
+Back leads from a topic to the topics, and from there home.
 
 ## How it connects to Claude Code
 

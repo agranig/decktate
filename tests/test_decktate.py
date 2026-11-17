@@ -662,9 +662,10 @@ def test_any_key_silences_speech_and_speak_repeats(tmp_path):
     r.board.tick()
     assert len(r.speaker.said) == said                             # nothing is spoken (and no voice is fetched) while muted
     r.tap(SPEAK)                                                   # takes you to the volume keys
-    assert r.board.page == "settings" and r.face(7).disabled and r.face(7).caption == "0%"
-    r.tap(8)
-    r.tap(9)
+    assert (r.board.page, r.board.topic) == ("settings", "sound") and r.face(1).disabled and r.face(1).caption == "0%"
+    r.tap(2)                                                       # louder
+    r.tap(9)                                                       # back: straight home, as that is where you came from
+    assert r.board.page == "main"
     assert r.system["vol"] == 10 and r.face(SPEAK).label == "speak"
     said = len(r.speaker.said)
     r.tap(SPEAK)                                                   # silent: repeats the last message
@@ -870,69 +871,99 @@ def test_stats_and_settings_pages(tmp_path, monkeypatch):
     devs = [audio.Device(0, "Desk Mic", 1, 0, True), audio.Device(1, "Headset", 1, 2), audio.Device(2, "Speakers", 0, 2, False, True)]
     monkeypatch.setattr(audio, "devices", lambda refresh=False: devs)
     system = r.system                                              # the computer's own output volume
-    r.tap(SETTINGS)                                                # the settings key, next to stats
-    assert r.board.page == "settings"
-    assert (r.face(7).label, r.face(7).caption, r.face(8).label, r.face(8).caption) == ("quieter", "44%", "louder", "44%")
-    r.tap(8)                                                       # louder: the system volume, in steps of ten
-    assert system["vol"] == 50 and r.face(8).caption == "50%" and r.speaker.chimes[-1] == "ok"
-    r.tap(8)
+    SOUND, MICROPHONE, VOICE, DISPLAY, HOOKS, BACK = 0, 1, 2, 3, 5, 9
+    r.tap(SETTINGS)                                                # the settings: one key per topic, each says what is set
+    assert r.board.page == "settings" and r.board.topic is None
+    assert [(r.face(k).label, r.face(k).caption) for k in (SOUND, MICROPHONE, VOICE, DISPLAY)] == [
+        ("sound", "44%"), ("microphone", "Desk Mic"), ("voice", "system 1.2x"), ("display", f"{r.cfg.brightness}%")]
+    assert r.face(HOOKS).label == "hooks" and r.face(BACK).label == "back"
+    assert [k for k in range(15) if r.face(k)] == [0, 1, 2, 3, 5, 9]              # nothing else: not cluttered
+
+    r.tap(SOUND)                                                   # --- sound: speaker, quieter, louder, test
+    assert r.board.topic == "sound" and [r.face(k).label for k in (0, 1, 2, 3)] == ["speaker", "quieter", "louder", "test"]
+    assert (r.face(1).caption, r.face(2).caption, r.face(0).text) == ("44%", "44%", "Speakers")
+    r.tap(2)                                                       # louder: the system volume, in steps of ten
+    assert system["vol"] == 50 and r.face(2).caption == "50%" and r.speaker.chimes[-1] == "ok"
+    r.tap(2)
     assert system["vol"] == 60 and r.cfg.audio.volume == 1.0       # Decktate's own gain is left alone
-    r.tap(7), r.tap(7), r.tap(7)
-    assert system["vol"] == 30 and r.face(7).caption == "30%"
+    r.tap(1), r.tap(1), r.tap(1)
+    assert system["vol"] == 30 and r.face(1).caption == "30%"
     system["vol"] = 100                                            # changed elsewhere (keyboard): picked up
     r.advance(3.5)
-    assert r.face(8).caption == "100%" and r.face(8).disabled and not r.face(7).disabled
-    r.tap(8)
+    assert r.face(2).caption == "100%" and r.face(2).disabled and not r.face(1).disabled
+    r.tap(2)
     assert system["vol"] == 100
     r.advance(3)                                                   # let the "loudest" note go away
-    assert r.face(12).label == "brightness"
-    assert (r.face(0).label, r.face(0).text, r.face(1).text) == ("microphone", "Desk Mic", "Speakers")
+    r.tap(0)                                                       # the speaker key steps through the outputs
+    assert r.cfg.audio.output == "Headset" and r.speaker.player.device == "Headset" and r.speaker.chimes[-1] == "ok"
+    r.tap(3)
+    assert r.speaker.said[-1] == "Decktate is ready."
+    r.tap(BACK)                                                    # back: to the topics, not home
+    assert r.board.page == "settings" and r.board.topic is None and r.face(SOUND).caption == "100%"
+
+    r.tap(MICROPHONE)                                              # --- microphone: device, language, test
+    assert [r.face(k).label for k in (0, 1, 2)] == ["microphone", "language", "test"] and r.face(3) is None
     r.tap(0)
     assert r.cfg.audio.input == "Headset" and r.face(0).text == "Headset"
     r.tap(1)
-    assert r.cfg.audio.output == "Headset" and r.speaker.player.device == "Headset" and r.speaker.chimes[-1] == "ok"
-    r.tap(3)
     assert r.cfg.speech.language == "de"
-    r.tap(6)
-    assert r.speaker.said[-1] == "Decktate is ready."
-    assert (r.face(13).label, r.face(13).value) == ("talk speed", "1.2x")      # the default
-    assert (r.face(4).label, r.face(14).label) == ("faster", "slower")          # right column: speed up / down
+    r.hold(2, 1.0)                                                 # mic test: says what it heard
+    assert r.face(TOAST).text == "please add tests for the parser"
+    r.advance(4.5)
+    r.tap(BACK)
+    assert r.face(MICROPHONE).caption == "Headset"
+
+    r.tap(VOICE)                                                   # --- voice: voice, slower, speed, faster, what is read out
+    assert [r.face(k).label for k in (0, 1, 2, 3, 5, 6)] == ["voice", "slower", "talk speed", "faster", "requests", "answers"]
+    assert r.face(2).value == "1.2x"                               # the default
     from decktate.ui.board import SPEED_SAMPLE
-    r.tap(4)                                                       # steps of 0.05, with a longer sample read out
-    assert r.cfg.speech.speed == 1.25 and r.face(13).value == "1.25x"
+    r.tap(3)                                                       # steps of 0.05, with a longer sample read out
+    assert r.cfg.speech.speed == 1.25 and r.face(2).value == "1.25x"
     assert r.speaker.said[-1] == "Speed 1.25. " + SPEED_SAMPLE and len(SPEED_SAMPLE.split()) > 40
     assert config_mod.load(tmp_path).speech.speed == 1.25
-    r.tap(14), r.tap(14), r.tap(14)
+    r.tap(1), r.tap(1), r.tap(1)
     assert r.cfg.speech.speed == 1.1 and r.speaker.said[-1].startswith("Speed 1.1. The refactoring")
-    r.tap(13)                                                      # the speed key itself replays the sample
+    r.tap(2)                                                       # the speed key itself replays the sample
     assert r.speaker.said[-1] == SPEED_SAMPLE
     r.cfg.speech.speed = 2.0                                       # the system voice stops at 2.0
     r.board.tick()
-    assert r.face(4).disabled
-    r.tap(4)
+    assert r.face(3).disabled
+    r.tap(3)
     assert r.cfg.speech.speed == 2.0 and r.face(TOAST).text == "fastest"
     r.advance(3)
     r.speaker.engine.name = "elevenlabs"                           # ElevenLabs cannot go above 1.2
     r.cfg.speech.speed = 1.2
     r.board.tick()
-    assert r.face(4).disabled and not r.face(14).disabled
-    r.tap(4)
+    assert r.face(3).disabled and not r.face(1).disabled
+    r.tap(3)
     assert r.cfg.speech.speed == 1.2
-    r.tap(14)
+    r.tap(1)
     assert r.cfg.speech.speed == 1.15
     r.speaker.engine.name = "system"
     r.advance(3)
-    r.tap(STATS)                                                   # back
+    assert (r.face(5).caption, r.face(6).caption) == ("read out", "read out")
+    r.tap(6)                                                       # do not read out what a session finished with
+    assert r.cfg.speech.speak_on_stop is False and r.face(6).caption == "silent" and config_mod.load(tmp_path).speech.speak_on_stop is False
+    said = len(r.speaker.said)
+    r.hub.handle({"hook_event_name": "Stop", "session_id": "a", "cwd": "/w/alpha", "last_assistant_message": "All done."})
+    assert len(r.speaker.said) == said
+    r.tap(6)
+    r.tap(BACK)
+
+    r.tap(DISPLAY)                                                 # --- display: dimmer, brightness, brighter
+    assert [r.face(k).label for k in (0, 1, 2)] == ["dimmer", "brightness", "brighter"]
+    r.cfg.brightness = 60
+    r.tap(2)
+    assert r.cfg.brightness == 70 and r.face(1).value == "70" and r.deck.brightness == 70 and config_mod.load(tmp_path).brightness == 70
+    for _ in range(8):
+        r.tap(0)
+    assert r.cfg.brightness == 10 and r.face(0).disabled and r.face(TOAST).text == "darkest"   # never quite dark
+    r.advance(3)
+    r.tap(BACK), r.tap(BACK)                                       # topics, then home
     assert r.board.page == "main"
-    r.tap(SETTINGS)
     saved = config_mod.load(tmp_path)                              # choices persist
     assert (saved.audio.input, saved.audio.output, saved.speech.language) == ("Headset", "Headset", "de")
     assert audio.pick("unplugged thing", "input").name == "Desk Mic"   # a missing device falls back to the default
-    r.hold(5, 1.0)                                                 # mic test: says what it heard
-    assert r.face(TOAST).text == "please add tests for the parser"
-    r.advance(5)
-    r.tap(STATS)
-    assert r.board.page == "main"
 
 
 def test_muted_projects_are_never_spoken(tmp_path):
