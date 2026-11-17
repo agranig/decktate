@@ -1,5 +1,5 @@
 """Pillow renderer. Everything is drawn at 4x and scaled down, so rings,
-pictograms and sparklines come out anti-aliased on the 72 px keys."""
+pictograms and level bars come out anti-aliased on the 72 px keys."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from ..status import Series, Status
+from ..status import Status
 from . import icons
 
 SS = 4  # supersampling factor
@@ -26,14 +26,10 @@ TINT = {Status.FAIL: (0.62, 0.26), Status.WARN: (0.40, 0.14), Status.RUNNING: (0
 BG_TOP, BG_BOTTOM = (23, 25, 34), (9, 10, 14)
 TEXT, MUTED = (245, 247, 250), (146, 152, 168)
 ACCENT = (167, 139, 250)  # navigation / context
-PROD = (255, 59, 48)
 
-_FONTS = [  # (path, weight is a variation name)
+_FONTS = [  # the system font (its weights are variation names), then a plain fallback
     "/System/Library/Fonts/SFNS.ttf",
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-    "C:/Windows/Fonts/arialbd.ttf",
 ]
 
 
@@ -54,24 +50,19 @@ def font(size: int, weight: str = "Bold") -> ImageFont.ImageFont:
 class Face:
     """Declarative description of one key."""
 
-    kind: str = "stat"  # stat | ring | icon | spark | text | stats | bars | session
+    kind: str = "stat"  # stat | ring | icon | text | stats | bars | session
     status: Status | None = None
     value: str = ""  # the one big figure
     label: str = ""  # tiny caption above
     caption: str = ""  # caption below the figure
-    foot: str = ""  # tiny line at the very bottom (e.g. a time)
     icon: str = ""  # pictogram name (see icons.ICONS)
     ring: float | None = None  # 0..1 donut
-    spark: list[float] = field(default_factory=list)
-    threshold: float | None = None
-    strip: list[Status] = field(default_factory=list)  # last runs, oldest first
+    spark: list[float] = field(default_factory=list)  # kind "bars": the recent microphone levels
     solid: bool = False  # tint the whole key with the status colour
-    frame: bool = False  # prod
     blink: bool = False  # unacknowledged change
     pulse: bool = False  # running / attention
     disabled: bool = False
     accent: tuple[int, int, int] | None = None
-    tint_value: bool = False  # draw the figure in the status colour (non-solid keys)
     text: str = ""  # kind "text": words wrapped over several lines (menu options, transcripts); kind "session": the name
     outline: tuple[int, int, int] | None = None  # coloured outline, e.g. the selected session
     stats: dict | None = None  # kind "stats": {"h5": pct, "d7": pct, "ctx": pct, "cost": usd}; any may be None
@@ -285,38 +276,6 @@ def _session(d, face: "Face", W: float, H: float, u: float, colour) -> None:
     d.text((x, y), word, font=sf, fill=scol, anchor="lm")
 
 
-def _sparkline(d, img, box, pts, colour, threshold=None):
-    x0, y0, x1, y1 = box
-    lo, hi = min(pts), max(pts)
-    if threshold is not None:
-        lo, hi = min(lo, threshold), max(hi, threshold)
-    span = (hi - lo) or 1.0
-    xy = [(x0 + (x1 - x0) * i / max(1, len(pts) - 1), y1 - (y1 - y0) * (v - lo) / span) for i, v in enumerate(pts)]
-    if len(xy) == 1:
-        xy = [(x0, xy[0][1]), (x1, xy[0][1])]
-    # soft area fill under the line
-    mask = Image.new("L", img.size, 0)
-    ImageDraw.Draw(mask).polygon(xy + [(x1, y1 + 2 * SS), (x0, y1 + 2 * SS)], fill=70)
-    fade = Image.linear_gradient("L").resize((img.width, int(y1 - y0 + 2 * SS)))
-    fade = Image.eval(fade, lambda v: 255 - v)
-    grad = Image.new("L", img.size, 0)
-    grad.paste(fade, (0, int(y0)))
-    img.paste(Image.new("RGB", img.size, colour), (0, 0), Image.composite(grad, Image.new("L", img.size, 0), mask).point(lambda v: v * 0.45))
-    if threshold is not None:
-        ty = y1 - (y1 - y0) * (threshold - lo) / span
-        for x in range(int(x0), int(x1), 6 * SS):
-            d.line([x, ty, x + 3 * SS, ty], fill=(255, 255, 255, 70) if img.mode == "RGBA" else (90, 96, 112), width=SS)
-    icons.rline(d, xy, colour, 2 * SS)
-    lx, ly = xy[-1]
-    d.ellipse([lx - 3 * SS, ly - 3 * SS, lx + 3 * SS, ly + 3 * SS], fill=TEXT)
-
-
-def fmt(v: float) -> str:
-    if abs(v) >= 100:
-        return f"{v:.0f}"
-    return f"{v:.1f}" if abs(v) >= 10 else f"{v:.2f}".rstrip("0").rstrip(".")
-
-
 _CACHE: dict = {}
 
 
@@ -356,7 +315,7 @@ def _render_key(face: Face, size, phase: float) -> Image.Image:
     cx = W / 2
 
     top = 17 * u if face.label else 6 * u
-    if face.label and face.kind != "spark":
+    if face.label:
         lcol = MUTED if not face.solid else _mix(TEXT, colour, 0.25)
         lines = _wrap_label(d, face.label.upper(), 9 * u, W - 8 * u) if face.kind == "stat" else None
         if lines and len(lines) == 2:  # long names (tests): two lines instead of an ellipsis
@@ -366,27 +325,10 @@ def _render_key(face: Face, size, phase: float) -> Image.Image:
         else:
             _text(d, (cx, 10 * u), face.label.upper(), 9 * u, lcol, "Semibold", max_w=W - 10 * u)
     bottom = H - 6 * u
-    if face.strip:
-        n = len(face.strip)
-        gap = 9 * u
-        x = cx - gap * (n - 1) / 2
-        y = H - 9 * u
-        for s in face.strip:
-            r = 2.8 * u
-            if s == Status.RUNNING:
-                d.ellipse([x - r, y - r, x + r, y + r], outline=COLORS[s], width=int(1.2 * u))
-            else:
-                d.ellipse([x - r, y - r, x + r, y + r], fill=COLORS[s])
-            x += gap
-        bottom = y - 6 * u
-    elif face.caption:
-        lift = 11 * u if face.foot else 0
-        _text(d, (cx, H - 11 * u - lift), face.caption, 12 * u, _mix(TEXT, MUTED, 0.25) if not face.solid else TEXT,
+    if face.caption:
+        _text(d, (cx, H - 11 * u), face.caption, 12 * u, _mix(TEXT, MUTED, 0.25) if not face.solid else TEXT,
               "Semibold", max_w=W - 8 * u)
-        bottom = H - 20 * u - lift
-        if face.foot:
-            _text(d, (cx, H - 8 * u), face.foot, 9 * u, MUTED if not face.solid else _mix(TEXT, colour, 0.3),
-                  "Medium", max_w=W - 8 * u)
+        bottom = H - 20 * u
     mid = (top + bottom) / 2
 
     if face.kind == "ring":
@@ -411,29 +353,19 @@ def _render_key(face: Face, size, phase: float) -> Image.Image:
     elif face.kind == "icon":
         if face.icon:
             icons.draw(d, face.icon, cx, mid, min(bottom - top, 34 * u) * 0.86, colour, 2.6 * u)
-    elif face.kind == "spark":
-        _text(d, (7 * u, 10 * u), face.label.upper(), 9 * u, MUTED, "Semibold", anchor="lm")
-        if face.value:
-            _text(d, (W - 7 * u, 10 * u), face.value, 12 * u, colour, "Bold", anchor="rm")
-        if face.spark:
-            _sparkline(d, img, (8 * u, 26 * u, W - 9 * u, H - 12 * u), face.spark, colour, face.threshold)
-        else:
-            _text(d, (cx, H / 2 + 6 * u), "–", 22 * u, MUTED)
     else:  # stat
         if face.icon and face.value:
             icons.draw(d, face.icon, cx, top + 9 * u, 15 * u, _mix(TEXT, colour, 0.15) if face.solid else colour, 1.9 * u)
             _text(d, (cx, (top + 18 * u + bottom) / 2), face.value, 26 * u, TEXT, "Bold", max_w=W - 10 * u)
         elif face.value:
             _text(d, (cx, mid), face.value, min(34 * u, (bottom - top) * 1.05),
-                  colour if face.tint_value and not face.solid else TEXT, "Bold", max_w=W - 10 * u)
+                  TEXT, "Bold", max_w=W - 10 * u)
         elif face.icon:
             icons.draw(d, face.icon, cx, mid, min(bottom - top, 34 * u) * 0.86, colour, 2.6 * u)
-        if face.status and not face.strip and not face.solid and not face.caption:
+        if face.status and not face.solid and not face.caption:
             y = H - 4.5 * u
             icons.rline(d, [(cx - 9 * u, y), (cx + 9 * u, y)], colour, 2.4 * u)
 
-    if face.frame:
-        d.rounded_rectangle([1.2 * u, 1.2 * u, W - 1.2 * u, H - 1.2 * u], radius=9 * u, outline=PROD, width=int(2 * u))
     if face.outline:
         d.rounded_rectangle([1.2 * u, 1.2 * u, W - 1.2 * u, H - 1.2 * u], radius=9 * u, outline=face.outline,
                             width=int(2.4 * u))
@@ -485,47 +417,3 @@ def snake(img: Image.Image, p: float, colour=TEXT) -> Image.Image:
     layer = layer.resize(img.size, Image.LANCZOS)
     base.paste(layer, (0, 0), layer)
     return base
-
-
-def split_canvas(canvas: Image.Image, cols=5, rows=2, size=(72, 72)) -> list[Image.Image]:
-    """Cut a merged canvas into row-major key tiles."""
-    w, h = size
-    if canvas.size != (cols * w, rows * h):
-        canvas = canvas.resize((cols * w, rows * h), Image.LANCZOS)
-    return [canvas.crop((c * w, r * h, (c + 1) * w, (r + 1) * h)) for r in range(rows) for c in range(cols)]
-
-
-def tile_text(d, col, row, text, size, colour=TEXT, weight="Bold", dy=0, k=72 * SS):
-    """Centre text inside one key of a merged canvas, so key gaps never cut it."""
-    _text(d, (col * k + k / 2, row * k + k / 2 + dy * SS), text, size * SS, colour, weight, max_w=k - 8 * SS)
-
-
-def render_chart(series: Series | None, title: str, cols=5, rows=2, k=72) -> Image.Image:
-    """One metric across the merged content keys."""
-    W, H = cols * k * SS, rows * k * SS
-    u = SS
-    img = _background(W, H)
-    d = ImageDraw.Draw(img)
-    if not series or not series.points:
-        tile_text(d, cols // 2, 0, "no data" if series else "…", 16, MUTED, dy=36)
-        return img.resize((cols * k, rows * k), Image.LANCZOS)
-    colour = COLORS[series.status]
-    _text(d, (10 * u, 14 * u), series.label, 13 * u, MUTED, "Semibold", anchor="lm")
-    _text(d, (10 * u, 38 * u), fmt(series.last) + (f" {series.unit}" if series.unit else ""), 24 * u, colour, anchor="lm")
-    _text(d, (W - 10 * u, 14 * u), title, 11 * u, MUTED, "Medium", anchor="rm", max_w=k * 2.6 * u)
-    _text(d, (W - 10 * u, 34 * u), f"{fmt(min(series.points))} – {fmt(max(series.points))}", 11 * u, MUTED, "Medium", anchor="rm")
-    _sparkline(d, img, (10 * u, 60 * u, W - 12 * u, H - 14 * u), series.points, colour, series.threshold)
-    return img.resize((cols * k, rows * k), Image.LANCZOS)
-
-
-def test_pattern(index: int, total: int, size=(72, 72)) -> Image.Image:
-    """Hue ramp, key index, corner marks (reveals flips / rotation)."""
-    import colorsys
-
-    r, g, b = colorsys.hsv_to_rgb(index / total, 0.75, 0.85)
-    img = Image.new("RGB", size, (int(r * 255), int(g * 255), int(b * 255)))
-    d = ImageDraw.Draw(img)
-    d.text((size[0] / 2, size[1] / 2), str(index), font=font(30), fill=TEXT, anchor="mm")
-    d.polygon([(0, 0), (14, 0), (0, 14)], fill=TEXT)
-    d.text((size[0] - 3, size[1] - 2), "BR", font=font(10), fill=TEXT, anchor="rd")
-    return img

@@ -176,14 +176,6 @@ class Microphone:
             self._stream = None
             return False
 
-    def chunks(self, timeout: float = 0.2):
-        """Yield captured chunks until stop() is called."""
-        while self._stream is not None or not self._q.empty():
-            try:
-                yield self._q.get(timeout=timeout)
-            except queue.Empty:
-                continue
-
     def read(self, timeout: float = 0.2) -> bytes | None:
         try:
             return self._q.get(timeout=timeout)

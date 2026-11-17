@@ -149,7 +149,6 @@ class Board:
         self._down: dict | None = None
         self._sent: list[bytes | None] = [None] * deck.key_count
         self._voices: list[dict] | None = None
-        self._mic_peak = 0.0
         self._levels: list[float] = []  # recent microphone levels, one per tick, while listening
         self._volume: tuple[float, int | None] | None = None  # (read at, system volume in percent)
         deck.set_brightness(cfg.brightness)
@@ -556,7 +555,7 @@ class Board:
         take = self._new_take()
         if not take.start():
             return self.toast(take.error or "mic failed", Status.FAIL, 4)
-        self.take, self.take_for, self.review, self._mic_peak, self._levels = take, purpose, None, 0.0, []
+        self.take, self.take_for, self.review, self._levels = take, purpose, None, []
         # whatever happens on the deck while you talk, the words go to the session that was selected when you started
         self.take_target, self._take_ready, self._latched = (cur.id if cur else None), False, None
 
@@ -922,7 +921,6 @@ class Board:
         The text is not shown on the keys; it goes to Claude when the key is released.
         (With review_dictation on, the finished text is laid out on the top row to check.)"""
         if self.take:
-            self._mic_peak = max(self._mic_peak * 0.9, self.take.level)
             heard = max(self._levels[-9:] or [0.0]) > 0.03
             # level bars that follow your voice; if nothing arrives for a moment, say so instead of looking busy
             ready = getattr(self.take, "ready", True)

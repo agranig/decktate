@@ -1,12 +1,49 @@
 """Render every page of the board to PNG (simulator, fake data): uv run python tests/shots.py [outdir]"""
 import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_decktate import BASH, QUESTION, Rig  # noqa: E402
+
+
+KEY = 144  # pixels per key in the pictures: twice the deck's own 72, drawn at that size (not scaled up)
+
+
+def picture(board, key: int = KEY, gap: int | None = None, pad: int | None = None, frame: bool = False):
+    """The board as a sharp picture: every key is drawn at `key` pixels, with rounded corners, on a dark panel.
+    frame=True adds the deck's body around the keys (for the README)."""
+    from PIL import Image, ImageDraw
+
+    from decktate.ui.render import render_key, snake, TEXT
+
+    gap = key // 6 if gap is None else gap
+    pad = (key // 3 if frame else gap) if pad is None else pad
+    cols, rows = 5, 3
+    now = board.clock()
+    keys, prog = board.keys(), board.confirm_progress(now)
+    W, H = cols * key + (cols - 1) * gap + 2 * pad, rows * key + (rows - 1) * gap + 2 * pad
+    ss = 2  # the panel and the corner masks are drawn larger and scaled down, for smooth edges
+    panel = Image.new("RGBA", (W * ss, H * ss), (0, 0, 0, 0))
+    d = ImageDraw.Draw(panel)
+    if frame:
+        d.rounded_rectangle([0, 0, W * ss - 1, H * ss - 1], radius=int(key * 0.3 * ss), fill=(16, 17, 22, 255),
+                            outline=(46, 49, 60, 255), width=2 * ss)
+    else:
+        d.rectangle([0, 0, W * ss, H * ss], fill=(12, 13, 17, 255))
+    panel = panel.resize((W, H), Image.LANCZOS)
+    mask = Image.new("L", (key * ss, key * ss), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, key * ss - 1, key * ss - 1], radius=int(key * 0.14 * ss), fill=255)
+    mask = mask.resize((key, key), Image.LANCZOS)
+    for index in range(cols * rows):
+        k = keys.get(index)
+        img = render_key(k.face if k else None, (key, key), now)
+        if prog and prog[0] == index:
+            img = snake(img, prog[1], k.colour if k else TEXT)
+        x, y = pad + (index % cols) * (key + gap), pad + (index // cols) * (key + gap)
+        panel.paste(img.convert("RGBA"), (x, y), mask)
+    return panel
 
 
 def main(out: Path) -> list[Path]:
@@ -19,8 +56,12 @@ def main(out: Path) -> list[Path]:
     def shot(name):
         r.board.tick()
         p = out / f"{name}.png"
-        r.deck.save(str(p), scale=2)
+        picture(r.board).save(p, optimize=True)
         paths.append(p)
+        if name == "2-permission":  # the picture at the top of the README: larger keys, in the deck's body
+            hero = out.parent / "decktate.png"
+            picture(r.board, key=200, frame=True).save(hero, optimize=True)
+            paths.append(hero)
 
     h = r.hub
     shot("0-empty")

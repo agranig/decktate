@@ -89,18 +89,12 @@ def cmd_run(args) -> int:
 
 
 def cmd_app(args) -> int:
-    if sys.platform != "darwin":
-        print("the menu bar app is macOS only; use `decktate run` here", file=sys.stderr)
-        return 1
     from .macapp import run_app
 
     return run_app(config_mod.load(), args.sim, args.sim_port)
 
 
 def cmd_install_app(args) -> int:
-    if sys.platform != "darwin":
-        print("the menu bar app is macOS only", file=sys.stderr)
-        return 1
     from .macapp import install_app
 
     app, note = install_app(args.dir)
@@ -256,11 +250,11 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("--sim", action="store_true", help="use the simulator web page instead of a deck")
     run.add_argument("--sim-port", type=int, default=8766)
     run.set_defaults(fn=cmd_run)
-    app = sub.add_parser("app", help="macOS: run as a menu bar app")
+    app = sub.add_parser("app", help="run as a menu bar app")
     app.add_argument("--sim", action="store_true")
     app.add_argument("--sim-port", type=int, default=8766)
     app.set_defaults(fn=cmd_app)
-    iapp = sub.add_parser("install-app", help="macOS: create Decktate.app (menu bar app)")
+    iapp = sub.add_parser("install-app", help="create Decktate.app (menu bar app)")
     iapp.add_argument("--dir", help="where to put it (default ~/Applications)")
     iapp.set_defaults(fn=cmd_install_app)
     inst = sub.add_parser("install", help="add Decktate's hooks to Claude Code's settings")

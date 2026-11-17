@@ -3,7 +3,7 @@
 #   DEEPGRAM_API_KEY=...      dictation (without it the MIC key is off)
 #   ELEVENLABS_API_KEY=...    voice (without it the system voice is used)
 
-port: 47873                   # hooks are served on 127.0.0.1:<port>; run `decktate install` again after changing it
+port: 47873                   # hooks are served on 127.0.0.1:<port>; restart Decktate after changing it
 brightness: 60
 permission_hold_s: 120        # how long a request waits for a key before the terminal asks instead
 auto_hooks: true              # add the hooks when Decktate starts, remove them when it quits

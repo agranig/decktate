@@ -131,8 +131,8 @@ class Hub:
     """All sessions, the selected one, and the pending decisions."""
 
     def __init__(self, hold_s: float = 120.0, audit: Audit | None = None,
-                 clock: Callable[[], float] = time.time, max_sessions: int = 4):
-        self.hold_s, self.audit, self.clock, self.max_sessions = hold_s, audit, clock, max_sessions
+                 clock: Callable[[], float] = time.time):
+        self.hold_s, self.audit, self.clock = hold_s, audit, clock
         self.sessions: dict[str, Session] = {}
         self.selected: str | None = None
         self.limits: dict = {}  # the newest 5-hour / 7-day quota from any session (they are per account, not per session)

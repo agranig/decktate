@@ -1229,7 +1229,7 @@ def test_speaker_redacts_caches_and_can_be_silenced(tmp_path):
 def test_injector_is_chosen_from_the_session_environment():
     which_all = lambda name: f"/usr/bin/{name}"   # noqa: E731
     none = lambda name: None                       # noqa: E731
-    pick = lambda term, platform="darwin", which=none: for_session("sid", term, platform, which, tty_of=lambda s: "/dev/ttys009")  # noqa: E731
+    pick = lambda term, which=none: for_session("sid", term, which, tty_of=lambda s: "/dev/ttys009")  # noqa: E731
     it = pick({"TERM_PROGRAM": "iTerm.app", "ITERM_SESSION_ID": "w0t1p0:ABCD-1234"})
     assert isinstance(it, ITerm) and it.sid == "ABCD-1234"
     term = pick({"TERM_PROGRAM": "Apple_Terminal"})
@@ -1238,8 +1238,8 @@ def test_injector_is_chosen_from_the_session_environment():
     assert isinstance(ghost, MacKeystrokes) and ghost.app == "Ghostty"
     assert isinstance(pick({"TERM_PROGRAM": "iTerm.app", "ITERM_SESSION_ID": "x:y", "TMUX_PANE": "%3"}, which=which_all), Tmux)
     assert isinstance(pick({"TERM_PROGRAM": "iTerm.app", "ITERM_SESSION_ID": "x:y", "TMUX_PANE": "%3"}), ITerm)   # tmux not installed
-    assert isinstance(pick({"KITTY_WINDOW_ID": "4", "KITTY_LISTEN_ON": "unix:/tmp/k"}, "linux", which_all), Kitty)
-    assert isinstance(pick({"WEZTERM_PANE": "7"}, "linux", which_all), WezTerm)
+    assert isinstance(pick({"KITTY_WINDOW_ID": "4", "KITTY_LISTEN_ON": "unix:/tmp/k"}, which_all), Kitty)
+    assert isinstance(pick({"WEZTERM_PANE": "7"}, which_all), WezTerm)
     unknown = pick({"TERM_PROGRAM": "mystery"})
     assert type(unknown) is Injector
     with pytest.raises(InjectError):
