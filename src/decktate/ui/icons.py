@@ -254,6 +254,25 @@ def _gear(d, cx, cy, s, c, w):
     arc(d, cx, cy, s * 0.15, 0, 360, c, w * 0.85)
 
 
+def _sun(d, cx, cy, s, c, w):
+    """Brightness: a circle with rays."""
+    r = s * 0.2
+    arc(d, cx, cy, r, 0, 360, c, w)
+    for i in range(8):
+        a = math.radians(i * 45)
+        rline(d, [(cx + math.sin(a) * r * 1.65, cy - math.cos(a) * r * 1.65),
+                  (cx + math.sin(a) * r * 2.3, cy - math.cos(a) * r * 2.3)], c, w)
+
+
+def _voice(d, cx, cy, s, c, w):
+    """The speaking voice: a speech bubble with three dots."""
+    h = s / 2
+    d.rounded_rectangle([cx - h * 0.95, cy - h * 0.75, cx + h * 0.95, cy + h * 0.45], radius=h * 0.32, outline=c, width=int(w))
+    d.polygon([(cx - h * 0.45, cy + h * 0.4), (cx - h * 0.55, cy + h * 0.95), (cx + h * 0.05, cy + h * 0.4)], fill=c)
+    for dx in (-0.42, 0.0, 0.42):
+        d.ellipse([cx + dx * h - w * 0.75, cy - h * 0.15 - w * 0.75, cx + dx * h + w * 0.75, cy - h * 0.15 + w * 0.75], fill=c)
+
+
 def _send(d, cx, cy, s, c, w):
     h = s / 2
     rline(d, [(cx - h * 0.85, cy - h * 0.7), (cx + h * 0.9, cy), (cx - h * 0.85, cy + h * 0.7), (cx - h * 0.45, cy),
@@ -302,7 +321,7 @@ ICONS = {
     "mic": _mic, "speaker": _speaker, "mute": _mute, "check": _check, "cross": _cross, "shield": _shield,
     "slash": _slash, "gear": _gear, "send": _send, "question": _question, "pencil": _pencil, "plan": _plan,
     "bolt": _bolt, "hand": _hand,
-    "sort": _sort, "ffwd": _ffwd, "pause": _pause,
+    "sort": _sort, "ffwd": _ffwd, "pause": _pause, "sun": _sun, "voice": _voice,
     "pulse": _pulse,
     "home": _home, "back": _chevron(1, 0), "up": _chevron(0, 1), "down": _chevron(0, -1),
     "filter": _filter, "fail": _fail, "pass": _pass, "running": _running, "play": _play, "stop": _stop,

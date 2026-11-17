@@ -116,6 +116,8 @@ class Board:
         self._looked = -1e9  # when
         self.menu_for: str | None = None  # the session whose menu (page "session") is open
         self.menu_from = "main"  # the page the menu was opened from
+        self.topic: str | None = None  # the settings topic that is open: sound | microphone | voice | display
+        self._topic_direct = False  # it was opened from outside the settings (the muted key)
         self._quitting: set[int] = set()  # processes asked to quit
         self._modes: set[str] = {"default", "acceptEdits", "plan"}  # modes Shift+Tab goes through: these, plus any seen
         self._no_return: set[str] = set()  # sessions quit from the deck: their key is free at once
@@ -752,8 +754,9 @@ class Board:
             if now - since > RETURN_S and hub.sessions:  # it is not coming back (while nothing runs at all: keep waiting)
                 self._chosen = (None, "", now)
 
-    def _go(self, page: str) -> None:
-        self.page, self.page_no = page, 0
+    def _go(self, page: str, topic: str | None = None) -> None:
+        """Open a page. `topic`: a settings topic to open directly (back then leads straight home)."""
+        self.page, self.page_no, self.topic, self._topic_direct = page, 0, topic, topic is not None
 
     def _mode_key(self, s: Session | None) -> Key | None:
         if not s:
@@ -845,7 +848,7 @@ class Board:
         if self.speaker and self.speaker.enabled and self.muted:
             # the computer's volume is at zero: a crossed-out speaker; tap for the settings page with the volume keys
             keys[11] = Key(Face(kind="icon", icon="mute", label="muted", accent=MUTED, caption="volume 0"),
-                           tap=lambda: self._go("settings"))
+                           tap=lambda: self._go("settings", "sound"))
         elif self.speaker and self.speaker.enabled and self.speaker.speaking:
             # while it talks this key is the one to quieten it; the other keys leave it talking
             keys[11] = Key(Face(kind="icon", icon="mute", label="quiet", status=Status.WARN, solid=True, caption="tap"),
@@ -993,6 +996,8 @@ class Board:
         return keys
 
     def _settings(self) -> dict[int, Key]:
+        """The settings start with one key per topic (sound, microphone, voice, display) that shows what is set;
+        a topic's own page has its few controls. Back leads from a topic to the topics, and from there home."""
         from ..speech import audio
 
         cfg = self.cfg
@@ -1042,11 +1047,6 @@ class Board:
             cfg.save()
             self.say(f"Speed {new:g}. {SPEED_SAMPLE}")   # spoken at the new speed
 
-        def brightness():
-            cfg.brightness = {30: 60, 60: 100}.get(cfg.brightness, 30)
-            self.deck.set_brightness(cfg.brightness)
-            cfg.save()
-
         def voice():
             engine = self.speaker.engine if self.speaker else None
             if not engine or engine.name != "elevenlabs":
@@ -1061,48 +1061,100 @@ class Board:
             except Exception as exc:
                 self.toast(type(exc).__name__, Status.FAIL)
 
+        def bright(step: int):
+            new = max(10, min(100, round((cfg.brightness + step) / 10) * 10))
+            if new == cfg.brightness:
+                return self.toast("brightest" if step > 0 else "darkest", Status.WARN)
+            cfg.brightness = new
+            self.deck.set_brightness(new)
+            cfg.save()
+
+        def toggle(name: str):
+            setattr(cfg.speech, name, not getattr(cfg.speech, name))
+            cfg.save()
+
+        def switch(label: str, name: str) -> Key:
+            on = getattr(cfg.speech, name)
+            return Key(Face(kind="icon", icon="check" if on else "cross", label=label, caption="read out" if on else "silent",
+                            status=Status.OK if on else None, accent=None if on else MUTED), tap=lambda: toggle(name))
+
         vol = self.system_volume()
         vol_text = "–" if vol is None else f"{vol}%"
         engine = self.speaker.engine.name if self.speaker and self.speaker.engine else "off"
         voice_name = next((v["name"].split(" - ")[0] for v in (self._voices or []) if v["id"] == cfg.speech.voice_id), engine)
-        level = self.take.level if self.take and self.take_for == "test" else 0.0
         stt = self._new_take is not None
-        from ..claude import install
+        hearing = max(self._levels[-9:] or [0.0]) > 0.03
 
-        try:
-            hooks = install.installed(cfg)
-        except Exception:
-            hooks = {"complete": False, "events": []}
-        keys = {
-            0: Key(Face(kind="text", text=mic.name if mic else "none", label="microphone", status=None if mic else Status.FAIL),
-                   tap=lambda: cycle("input")),
-            1: Key(Face(kind="text", text=spk.name if spk else "none", label="speaker", status=None if spk else Status.FAIL),
-                   tap=lambda: cycle("output")),
-            2: Key(Face(kind="text", text=voice_name, label="voice"), tap=voice),
-            3: Key(Face(value=cfg.speech.language.upper(), label="language"), tap=language),
-            5: Key(Face(kind="bars", spark=[round(v, 2) for v in self._levels[-9:]], label="mic test",
-                        status=Status.OK if max(self._levels[-9:] or [0.0]) > 0.03 else Status.WARN,
-                        caption="hearing you" if max(self._levels[-9:] or [0.0]) > 0.03 else "no sound")
-                   if self.take and self.take_for == "test" else
-                   Face(kind="icon", icon="mic", label="mic test", caption="hold" if stt else "no key", accent=ACCENT, disabled=not stt),
-                   talk=(lambda: self._talk_start("test"), self._talk_finish) if stt else None),
-            6: Key(Face(kind="icon", icon="speaker", label="voice test", accent=ACCENT, disabled=engine == "off"),
-                   tap=lambda: self.say("Decktate is ready.")),
-            7: Key(Face(kind="icon", icon="down", label="quieter", accent=ACCENT, caption=vol_text, disabled=vol in (None, 0)),
-                   tap=lambda: volume(-10)),
-            8: Key(Face(kind="icon", icon="up", label="louder", accent=ACCENT, caption=vol_text, disabled=vol in (None, 100)),
-                   tap=lambda: volume(+10)),
-            10: Key(Face(kind="icon", icon="pass" if hooks["complete"] else "warn", label="hooks",
-                         status=Status.OK if hooks["complete"] else Status.WARN,
-                         caption="installed" if hooks["complete"] else "not set")),
-            12: Key(Face(value=str(cfg.brightness), label="brightness"), tap=brightness),
-            13: Key(Face(value=f"{cfg.speech.speed:g}x", label="talk speed"), tap=lambda: self.say(SPEED_SAMPLE)),
-            4: Key(Face(kind="icon", icon="up", label="faster", accent=ACCENT, disabled=cfg.speech.speed >= speed_limits()[1]),
-                   tap=lambda: speed(+SPEED_STEP)),
-            14: Key(Face(kind="icon", icon="down", label="slower", accent=ACCENT, disabled=cfg.speech.speed <= speed_limits()[0]),
-                    tap=lambda: speed(-SPEED_STEP)),
-            9: self._back_key(),
-        }
+        def open_topic(name: str):
+            self.topic, self._topic_direct = name, False
+
+        def back():
+            if self.topic is None or self._topic_direct:
+                self._go("main")
+            else:
+                self.topic = None
+
+        keys: dict[int, Key] = {9: Key(Face(kind="icon", icon="back", label="back", accent=ACCENT), tap=back)}
+        if self.topic == "sound":       # [ speaker ] [ quieter ] [ louder ] [ test ]
+            keys.update({
+                0: Key(Face(kind="text", text=spk.name if spk else "none", label="speaker", status=None if spk else Status.FAIL),
+                       tap=lambda: cycle("output")),
+                1: Key(Face(kind="icon", icon="down", label="quieter", accent=ACCENT, caption=vol_text, disabled=vol in (None, 0)),
+                       tap=lambda: volume(-10)),
+                2: Key(Face(kind="icon", icon="up", label="louder", accent=ACCENT, caption=vol_text, disabled=vol in (None, 100)),
+                       tap=lambda: volume(+10)),
+                3: Key(Face(kind="icon", icon="speaker", label="test", accent=ACCENT, disabled=engine == "off"),
+                       tap=lambda: self.say("Decktate is ready.")),
+            })
+        elif self.topic == "microphone":  # [ microphone ] [ language ] [ test ]
+            keys.update({
+                0: Key(Face(kind="text", text=mic.name if mic else "none", label="microphone", status=None if mic else Status.FAIL),
+                       tap=lambda: cycle("input")),
+                1: Key(Face(value=cfg.speech.language.upper(), label="language"), tap=language),
+                2: Key(Face(kind="bars", spark=[round(v, 2) for v in self._levels[-9:]], label="test",
+                            status=Status.OK if hearing else Status.WARN, caption="hearing you" if hearing else "no sound")
+                       if self.take and self.take_for == "test" else
+                       Face(kind="icon", icon="mic", label="test", caption="hold" if stt else "no key", accent=ACCENT, disabled=not stt),
+                       talk=(lambda: self._talk_start("test"), self._talk_finish) if stt else None),
+            })
+        elif self.topic == "voice":     # [ voice ] [ slower ] [ speed ] [ faster ] / [ requests ] [ answers ]
+            keys.update({
+                0: Key(Face(kind="text", text=voice_name, label="voice"), tap=voice),
+                1: Key(Face(kind="icon", icon="down", label="slower", accent=ACCENT, disabled=cfg.speech.speed <= speed_limits()[0]),
+                       tap=lambda: speed(-SPEED_STEP)),
+                2: Key(Face(value=f"{cfg.speech.speed:g}x", label="talk speed"), tap=lambda: self.say(SPEED_SAMPLE)),
+                3: Key(Face(kind="icon", icon="up", label="faster", accent=ACCENT, disabled=cfg.speech.speed >= speed_limits()[1]),
+                       tap=lambda: speed(+SPEED_STEP)),
+                5: switch("requests", "speak_permissions"),   # permission requests and questions: read out or not
+                6: switch("answers", "speak_on_stop"),        # what a session finished with: read out or not
+            })
+        elif self.topic == "display":   # [ dimmer ] [ brightness ] [ brighter ]
+            keys.update({
+                0: Key(Face(kind="icon", icon="down", label="dimmer", accent=ACCENT, disabled=cfg.brightness <= 10), tap=lambda: bright(-10)),
+                1: Key(Face(value=str(cfg.brightness), label="brightness")),
+                2: Key(Face(kind="icon", icon="up", label="brighter", accent=ACCENT, disabled=cfg.brightness >= 100), tap=lambda: bright(+10)),
+            })
+        else:                           # the topics: each key says what is set, and opens its page
+            from ..claude import install
+
+            try:
+                hooks = install.installed(cfg)
+            except Exception:
+                hooks = {"complete": False, "events": []}
+            keys.update({
+                0: Key(Face(kind="icon", icon="mute" if vol == 0 else "speaker", label="sound", caption=vol_text, accent=ACCENT),
+                       tap=lambda: open_topic("sound")),
+                1: Key(Face(kind="icon", icon="mic", label="microphone", caption=mic.name if mic else "none",
+                            accent=None if not mic else ACCENT, status=None if mic else Status.FAIL),
+                       tap=lambda: open_topic("microphone")),
+                2: Key(Face(kind="icon", icon="voice", label="voice", caption=f"{voice_name} {cfg.speech.speed:g}x", accent=ACCENT),
+                       tap=lambda: open_topic("voice")),
+                3: Key(Face(kind="icon", icon="sun", label="display", caption=f"{cfg.brightness}%", accent=ACCENT),
+                       tap=lambda: open_topic("display")),
+                5: Key(Face(kind="icon", icon="pass" if hooks["complete"] else "warn", label="hooks",
+                            status=Status.OK if hooks["complete"] else Status.WARN,
+                            caption="installed" if hooks["complete"] else "not set")),
+            })
         return keys
 
     def keys(self) -> dict[int, Key]:

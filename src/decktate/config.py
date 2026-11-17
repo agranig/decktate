@@ -69,7 +69,8 @@ class Config:
         raw = yaml.safe_load(path.read_text()) if path.exists() else {}
         raw = raw or {}
         raw.setdefault("speech", {}).update(voice_id=self.speech.voice_id, language=self.speech.language, tts=self.speech.tts,
-                                            speed=self.speech.speed)
+                                            speed=self.speech.speed, speak_permissions=self.speech.speak_permissions,
+                                            speak_on_stop=self.speech.speak_on_stop)
         raw.setdefault("audio", {}).update(input=self.audio.input, output=self.audio.output, volume=self.audio.volume)
         raw["brightness"] = self.brightness
         path.write_text(yaml.safe_dump(raw, sort_keys=False))
