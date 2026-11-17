@@ -1,6 +1,5 @@
 """Text to speech. ElevenLabs when a key is configured, otherwise the
-operating system's own voice (macOS `say`, Linux `espeak-ng`), so spoken
-prompts work out of the box. Short fixed phrases are cached on disk.
+Mac's own voice (`say`), so spoken prompts work out of the box. Short fixed phrases are cached on disk.
 """
 
 from __future__ import annotations
@@ -24,7 +23,6 @@ from .audio import Player, chime
 API = "https://api.elevenlabs.io"
 RATE = 24000
 EL_SPEED = (0.7, 1.2)  # the range ElevenLabs accepts for voice_settings.speed
-ESPEAK_WPM = 175  # espeak's default words per minute
 
 
 def say_rate(speed: float) -> int:
@@ -100,34 +98,23 @@ class SystemVoice:
 
     @staticmethod
     def available() -> bool:
-        return bool(shutil.which("say") or shutil.which("espeak-ng") or shutil.which("espeak"))
+        return bool(shutil.which("say"))
 
     def stream(self, text: str):
         with tempfile.TemporaryDirectory() as tmp:
             out = os.path.join(tmp, "speech.wav")
             lang = self.cfg.speech.language
             speed = float(self.cfg.speech.speed)
-            if shutil.which("say"):
-                cmd = ["say", "-r", str(say_rate(speed)), "-o", out, f"--data-format=LEI16@{RATE}"]
-                if lang == "de":
-                    cmd += ["-v", "Anna"]
-                cmd.append(text)
-            else:
-                exe = shutil.which("espeak-ng") or shutil.which("espeak")
-                wpm = str(int(ESPEAK_WPM * min(2.0, max(0.5, speed))))
-                cmd = [exe, "-s", wpm, "-w", out, "-v", "de" if lang == "de" else "en", text]
+            cmd = ["say", "-r", str(say_rate(speed)), "-o", out, f"--data-format=LEI16@{RATE}"]
+            if lang == "de":
+                cmd += ["-v", "Anna"]
+            cmd.append(text)
             try:
                 subprocess.run(cmd, check=True, capture_output=True, timeout=30)
                 with wave.open(out, "rb") as w:
-                    rate, pcm = w.getframerate(), w.readframes(w.getnframes())
+                    pcm = w.readframes(w.getnframes())
             except Exception as exc:
                 raise TTSError(f"system voice: {type(exc).__name__}") from None
-        if rate != RATE:  # espeak renders at 22.05 kHz: resample by linear interpolation
-            import numpy as np
-
-            src = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
-            idx = np.linspace(0, len(src) - 1, int(len(src) * RATE / rate))
-            pcm = np.interp(idx, np.arange(len(src)), src).astype(np.int16).tobytes()
         yield pcm
 
 

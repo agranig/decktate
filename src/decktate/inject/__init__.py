@@ -10,7 +10,7 @@ comes from the session's own environment (sent along with every hook):
   WezTerm       `wezterm cli send-text`
   tmux          `tmux send-keys`, only if the session happens to run in tmux
   anything else keystrokes to the terminal app after bringing it to the front
-                (macOS: needs the Accessibility permission; Linux: xdotool)
+                (needs the Accessibility permission)
 
 Approvals, menu answers and "always allow" do NOT use any of this: they are
 answered through hooks.
@@ -22,7 +22,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -263,24 +262,7 @@ class WezTerm(Injector):
         _run(self.args, input=Kitty.SEQ[key])
 
 
-class Xdotool(Injector):
-    """Linux fallback: types into whatever window has the focus."""
-
-    name = "xdotool"
-    KEY = {"enter": "Return", "escape": "Escape", "shift_tab": "shift+Tab", "ctrl_c": "ctrl+c", "ctrl_enter": "ctrl+Return"}
-
-    def send_text(self, text, enter=True):
-        _run(["xdotool", "type", "--delay", "8", "--", text])
-        if enter:
-            time.sleep(TYPE_PAUSE)
-            self.key("enter")
-
-    def key(self, key):
-        _run(["xdotool", "key", self.KEY[key]])
-
-
-def for_session(session_id: str, terminal: dict, platform: str = sys.platform, which=shutil.which,
-                tty_of=session_tty) -> Injector:
+def for_session(session_id: str, terminal: dict, which=shutil.which, tty_of=session_tty) -> Injector:
     """Pick the best way to type into the terminal this session runs in."""
     term = terminal.get("TERM_PROGRAM", "")
     if terminal.get("TMUX_PANE") and which("tmux"):
@@ -289,16 +271,12 @@ def for_session(session_id: str, terminal: dict, platform: str = sys.platform, w
         return Kitty(terminal["KITTY_WINDOW_ID"], terminal["KITTY_LISTEN_ON"])
     if terminal.get("WEZTERM_PANE") and which("wezterm"):
         return WezTerm(terminal["WEZTERM_PANE"])
-    if platform == "darwin":
-        if terminal.get("ITERM_SESSION_ID"):
-            return ITerm(terminal["ITERM_SESSION_ID"])
-        if term == "Apple_Terminal":
-            return AppleTerminal(terminal.get("TTY") or tty_of(session_id))
-        if term in MAC_APPS:
-            return MacKeystrokes(MAC_APPS[term])
-        return Injector()
-    if which("xdotool") and os.environ.get("DISPLAY"):
-        return Xdotool()
+    if terminal.get("ITERM_SESSION_ID"):
+        return ITerm(terminal["ITERM_SESSION_ID"])
+    if term == "Apple_Terminal":
+        return AppleTerminal(terminal.get("TTY") or tty_of(session_id))
+    if term in MAC_APPS:
+        return MacKeystrokes(MAC_APPS[term])
     return Injector()
 
 
@@ -333,10 +311,8 @@ TERMINAL_SCREEN_SCRIPT = '''on run argv
 end run'''
 
 
-def screen_text(session_id: str, terminal: dict, platform: str = sys.platform, tty_of=session_tty) -> str | None:
+def screen_text(session_id: str, terminal: dict, tty_of=session_tty) -> str | None:
     """What is visible in the session's terminal tab, or None where that cannot be read."""
-    if platform != "darwin":
-        return None
     try:
         if terminal.get("ITERM_SESSION_ID"):
             return _run(["osascript", "-e", ITERM_SCREEN_SCRIPT, terminal["ITERM_SESSION_ID"].split(":")[-1]]) or None
