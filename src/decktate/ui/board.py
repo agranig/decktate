@@ -104,6 +104,7 @@ class Board:
         self._alive = alive or discover_mod.alive
         self._screen_of = screen_of or screen_text  # (session id, terminal) -> the text on its screen, or None
         self._screen_queued: set[str] = set()  # sessions whose screen says a message is waiting to be sent
+        self._btw_seen: dict[str, tuple[tuple[str, str], bool]] = {}  # session -> (the /btw answer on its screen, spoken)
         self._background: dict[str, dict] = {}  # session -> what its screen says runs in the background: {"shells": 2, ...}
         self._watch_now = threading.Event()
         self._watch_first: str | None = None
@@ -258,6 +259,12 @@ class Board:
         def run():
             try:
                 inj = self._injector_for(s.id, s.terminal)
+                if what == "text" and self._side_view_open(s):
+                    # a /btw answer is on the screen: it would swallow the first letters. Close it first.
+                    inj.key("escape")
+                    self._btw_seen.pop(s.id, None)
+                    if not self.sync:
+                        time.sleep(0.4)
                 inj.send_text(payload) if what == "text" else inj.key(what)
             except InjectError as exc:
                 self.toast(str(exc), Status.FAIL, 4)
@@ -331,6 +338,33 @@ class Board:
         if seen["queued"] != (s.id in self._screen_queued):
             (self._screen_queued.add if seen["queued"] else self._screen_queued.discard)(s.id)
             self.hub.version += 1
+        self._side_answer(s, seen["btw"])
+
+    def _side_answer(self, s: Session, btw: dict | None) -> None:
+        """Read out the answer to a /btw question. It is only on the screen (no hook fires for it), and it
+        arrives bit by bit, so it is spoken once it has stopped changing from one look to the next."""
+        if not btw or not btw["answer"].strip():
+            if not btw:
+                self._btw_seen.pop(s.id, None)  # the view is closed
+            return
+        before = self._btw_seen.get(s.id)
+        text = (btw["question"], btw["answer"])
+        if before is None or before[0] != text:
+            self._btw_seen[s.id] = (text, False)  # new or still growing: look again
+            self.watch_now(s.id)
+        elif not before[1]:
+            self._btw_seen[s.id] = (text, True)
+            if self.speaker and self.cfg.speech.speak_on_stop and not self._muted(s) and not self.muted:
+                self.speaker.speak(f"{self.name_of(s)}, by the way: {speakable(btw['answer'])}")
+
+    def _side_view_open(self, s: Session) -> bool:
+        """Is a /btw answer open in the session's terminal right now? Looks at the screen this moment, because
+        Esc is only safe while that view is open: otherwise Esc would interrupt Claude."""
+        try:
+            text = self._screen_of(s.id, s.terminal)
+        except Exception:
+            return False
+        return bool(text) and read_screen(text)["btw"] is not None
 
     def _has_queue(self, s: Session) -> bool:
         """Is a message waiting in the session's queue, i.e. is there something for "send now"?
@@ -628,6 +662,8 @@ class Board:
                 return self.toast("session is gone", Status.FAIL, 4)
             self._type("text", f"{purpose} {text}", s.id)
             self.toast(f"asked {self.name_of(s)}")
+            if not self.sync:  # the answer comes on the screen: start looking for it
+                threading.Timer(1.5, self.watch_now, args=(s.id,)).start()
             self._go("main")
         elif self.cfg.speech.review_dictation:
             self.review = text  # shown on the top row; MIC sends, the cross discards

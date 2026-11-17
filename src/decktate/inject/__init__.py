@@ -336,11 +336,12 @@ RUNNING_WORDS = (("shells", r"\b(\d+) shells?\b"), ("monitors", r"\b(\d+) monito
 def read_screen(text: str) -> dict:
     """What Claude Code shows at the bottom of its screen: {"mode": the permission mode or None if it cannot be
     told, "queued": a message is waiting ("... to send now"), "running": what runs in the background, e.g.
-    {"shells": 2, "monitors": 1} ({} = nothing, None = cannot be told)}.
+    {"shells": 2, "monitors": 1} ({} = nothing, None = cannot be told), "btw": the open side answer or None}.
 
     The mode line is under the prompt box ("⏵⏵ auto mode on (shift+tab to cycle)"); the normal mode shows
     nothing there, so it is only reported when the prompt box itself is on the screen (not while a dialog is)."""
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()][-16:]
+    every = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    lines = every[-16:]
     low = [ln.lower() for ln in lines]
     queued = any("to send now" in ln or "queued \u00b7" in ln for ln in low)   # "Queued · ctrl+enter to send now"
     borders = [i for i, ln in enumerate(lines) if len(ln) >= 20 and set(ln) <= set("─━═")]
@@ -359,4 +360,23 @@ def read_screen(text: str) -> dict:
             if found:
                 running[name] = max(found)
     mode = next((mode for words, mode in MODE_WORDS if any(words in ln for ln in footer)), "default" if box else None)
-    return {"mode": mode, "queued": queued, "running": running}
+    return {"mode": mode, "queued": queued, "running": running, "btw": side_answer(every)}
+
+
+def side_answer(lines: list[str]) -> dict | None:
+    """The answer to a /btw side question, while Claude Code shows it:
+
+          /btw what is 2+2?
+            2 + 2 is 4.
+          c to copy · f to fork · Esc to close
+
+    It is on the screen only: no hook reports it. While it is open the keyboard belongs to this view (the next
+    keys close it or copy, they are not typed), so it has to be closed with Esc before anything is typed."""
+    end = next((i for i in range(len(lines) - 1, -1, -1) if "esc to close" in lines[i].lower()
+                and ("to copy" in lines[i].lower() or "to fork" in lines[i].lower())), None)
+    if end is None:
+        return None
+    start = next((i for i in range(end - 1, -1, -1) if lines[i].startswith("/btw")), None)
+    if start is None:
+        return {"question": "", "answer": ""}  # open, but the question has scrolled away
+    return {"question": lines[start][4:].strip(), "answer": "\n".join(lines[start + 1:end])}

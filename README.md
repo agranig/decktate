@@ -141,7 +141,8 @@ A key that has nothing to do right now stays dark.
   to hear it.
 - **Commands** opens your slash commands (`/compact`, `/clear`, ...).
   **/btw** is special: hold it and ask a question out loud. Claude answers
-  on the side while it keeps working on its task.
+  on the side while it keeps working on its task, and the answer is read
+  out (in iTerm2 and Terminal.app).
 
 ### Settings
 
