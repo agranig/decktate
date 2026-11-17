@@ -90,7 +90,7 @@ def cmd_run(args) -> int:
 
 def cmd_app(args) -> int:
     if sys.platform != "darwin":
-        print("the Dock app is macOS only; use `decktate run` here", file=sys.stderr)
+        print("the menu bar app is macOS only; use `decktate run` here", file=sys.stderr)
         return 1
     from .macapp import run_app
 
@@ -99,7 +99,7 @@ def cmd_app(args) -> int:
 
 def cmd_install_app(args) -> int:
     if sys.platform != "darwin":
-        print("the Dock app is macOS only", file=sys.stderr)
+        print("the menu bar app is macOS only", file=sys.stderr)
         return 1
     from .macapp import install_app
 
@@ -107,7 +107,8 @@ def cmd_install_app(args) -> int:
     print(f"created {app}")
     if note:
         print("note:", note)
-    print("Open it, then right-click its Dock icon and choose Options > Keep in Dock.")
+    print("Open it: it appears in the menu bar at the top right (no Dock icon). To start it at login, add it")
+    print("under System Settings > General > Login Items.")
     print("It runs this installation; if you move or delete this folder, run `decktate install-app` again.")
     return 0
 
@@ -255,11 +256,11 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("--sim", action="store_true", help="use the simulator web page instead of a deck")
     run.add_argument("--sim-port", type=int, default=8766)
     run.set_defaults(fn=cmd_run)
-    app = sub.add_parser("app", help="macOS: run with a Dock icon")
+    app = sub.add_parser("app", help="macOS: run as a menu bar app")
     app.add_argument("--sim", action="store_true")
     app.add_argument("--sim-port", type=int, default=8766)
     app.set_defaults(fn=cmd_app)
-    iapp = sub.add_parser("install-app", help="macOS: create Decktate.app for the Dock")
+    iapp = sub.add_parser("install-app", help="macOS: create Decktate.app (menu bar app)")
     iapp.add_argument("--dir", help="where to put it (default ~/Applications)")
     iapp.set_defaults(fn=cmd_install_app)
     inst = sub.add_parser("install", help="add Decktate's hooks to Claude Code's settings")
