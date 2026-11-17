@@ -557,7 +557,7 @@ SCREEN = """⏺ Done.
 def test_a_mode_switched_in_the_terminal_shows_on_the_deck(tmp_path):
     from decktate.inject import read_screen
 
-    assert read_screen(SCREEN % ("", "⏸ plan mode on (shift+tab to cycle)")) == {"mode": "plan", "queued": False, "running": {}}
+    assert read_screen(SCREEN % ("", "⏸ plan mode on (shift+tab to cycle)")) == {"mode": "plan", "queued": False, "running": {}, "btw": None}
     assert read_screen(SCREEN % ("x", "⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt"))["mode"] == "auto"
     assert read_screen(SCREEN % ("", "⏵⏵ accept edits on (shift+tab to cycle)"))["mode"] == "acceptEdits"
     assert read_screen(SCREEN % ("", "⏵⏵ bypass permissions on (shift+tab to cycle)"))["mode"] == "bypassPermissions"
@@ -1336,6 +1336,51 @@ def test_btw_asks_a_side_question_by_voice_while_claude_works(tmp_path):
     nokey.hub.handle({"hook_event_name": "SessionStart", "session_id": "a", "cwd": "/w/a"})
     nokey.tap(COMMANDS)
     assert nokey.face(0).disabled and nokey.face(0).label == "no speech key"
+
+
+BTW_VIEW = """ ▐▛███▛█   Claude Code
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+  /btw what is 2+2?
+    %s
+  c to copy · f to fork · Esc to close
+"""
+
+
+def test_btw_answer_is_read_out_and_its_view_is_closed_before_typing(tmp_path):
+    from decktate.inject import read_screen
+
+    seen = read_screen(BTW_VIEW % "2 + 2 is 4.\n    That is all.")
+    assert seen["btw"] == {"question": "what is 2+2?", "answer": "2 + 2 is 4.\nThat is all."} and seen["mode"] is None
+    assert read_screen(SCREEN % ("", "? for shortcuts"))["btw"] is None
+
+    r = Rig(tmp_path)
+    r.hub.handle({"hook_event_name": "SessionStart", "session_id": "a", "cwd": "/w/a"})
+    a = r.hub.sessions["a"]
+    said = len(r.speaker.said)
+    r.screens["a"] = BTW_VIEW % "2 + 2"                             # the answer is still being written
+    r.board._watch(a)
+    assert len(r.speaker.said) == said
+    r.screens["a"] = BTW_VIEW % "2 + 2 is 4."
+    r.board._watch(a)
+    assert len(r.speaker.said) == said                              # it changed since the last look: wait
+    r.board._watch(a)                                               # the same twice: it is complete
+    assert r.speaker.said[-1] == "a, by the way: 2 + 2 is 4."
+    r.board._watch(a)
+    assert len(r.speaker.said) == said + 1                          # said once
+
+    r.hold(MIC, 1.0)                                                # dictating while that view is open:
+    assert r.typed == [("escape", ""), ("text", "please add tests for the parser")]   # Esc closes it, then the text
+    r.screens["a"] = SCREEN % ("", "? for shortcuts")               # the view is gone
+    r.board._watch(a)
+    r.hold(MIC, 1.0)
+    assert r.typed[2:] == [("text", "please add tests for the parser")]               # no Esc: that would interrupt Claude
+    r.screens["a"] = BTW_VIEW % "2 + 2 is 4."                       # the same question again later: read out again
+    r.board._watch(a), r.board._watch(a)
+    assert len(r.speaker.said) == said + 2
+    r.cfg.speech.speak_on_stop = False                              # answers are switched to silent: this one too
+    r.screens["a"] = BTW_VIEW % "Something else."
+    r.board._watch(a), r.board._watch(a)
+    assert len(r.speaker.said) == said + 2
 
 
 def test_typing_failures_show_on_the_deck_and_never_crash(tmp_path):

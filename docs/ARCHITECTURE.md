@@ -122,7 +122,10 @@ Claude Code fires no hook when the mode is switched in the terminal, or when
 a typed message waits in its queue. In iTerm2 and Terminal.app Decktate reads
 the visible text of the session's tab (AppleScript `contents`) and looks at
 the lines under the prompt box for Claude Code's own wording ("plan mode on",
-"auto mode on", "... to send now", "2 shells, 1 monitor"). The status line is not parsed, so a
+"auto mode on", "... to send now", "2 shells, 1 monitor"). The answer to a `/btw` question is read the same way: it is only on the
+screen, so it is spoken once it has stopped changing between two looks, and
+that view is closed with Esc before the deck types anything, because it
+swallows the first keys otherwise. The status line is not parsed, so a
 custom one does not matter. The selected session is read about once a second
 and at once when it is selected; the others every six seconds.
 
