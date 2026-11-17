@@ -33,6 +33,8 @@ PTT_MS = 220  # the reject key: hold this long before push-to-talk starts (short
 TAP_MS = 500  # the mic key: a press shorter than this is a tap (talk hands-free, tap again to send), longer is hold-to-talk
 BUSY = (State.WORKING, State.PERMISSION, State.QUESTION)  # Claude is in a turn: new text is queued
 DETACHED_KEEP_DAYS = 30  # how long a detached session is remembered
+TALK_COMMANDS = ("/btw",)  # slash commands that take what you say: /btw asks a side question while Claude keeps working
+QUEUE_GUESS_S = 45  # without a readable screen: how long "send now" is offered after the deck queued text
 DISCARD_KEY = 12  # always here: one key away from the mic key, so that a slip of the finger does not drop a dictation
 RETURN_S = 4  # a session that ends and starts again in the same terminal within this time keeps its key and stays selected
 LATCH_MAX_S = 300  # a dictation started with a tap is dropped if nobody ends it for this long
@@ -121,7 +123,8 @@ class Board:
         self._quitting: set[int] = set()  # processes asked to quit
         self._modes: set[str] = {"default", "acceptEdits", "plan"}  # modes Shift+Tab goes through: these, plus any seen
         self._no_return: set[str] = set()  # sessions quit from the deck: their key is free at once
-        self._queued: dict[str, int] = {}  # sessions with text from the deck waiting in Claude's queue -> turns ended then
+        self._queued: dict[str, tuple[int, float]] = {}  # text from the deck sent while Claude was busy: (turns ended then, when)
+        self._screen_read: dict[str, float] = {}  # session -> when its screen was last read successfully
         self._detached_at: dict[str, float] = {}  # session id -> when it was detached (kept in <home>/detached.json)
         self.deck, self.hub, self.cfg, self.speaker, self.clock = deck, hub, cfg, speaker, clock
         self._new_take = dictation  # () -> Dictation
@@ -200,7 +203,6 @@ class Board:
 
     def describe_session(self, s: Session) -> str:
         """What a session needs, or what it finished, as one or two spoken sentences."""
-        n = self.cfg.speech.max_sentences
         name = self.name_of(s)
         p = s.pending
         if s.state == State.PERMISSION:
@@ -213,7 +215,7 @@ class Board:
         if s.state == State.ERROR:
             return f"{name} stopped with an error. {speakable(s.last_message, 1)}"
         if s.state in (State.DONE, State.WAITING) or (s.state == State.IDLE and s.last_message):
-            return f"{name} finished. {speakable(s.last_message, n)}" if s.last_message else f"{name} is waiting for you."
+            return f"{name} finished. {speakable(s.last_message)}" if s.last_message else f"{name} is waiting for you."
         if s.state == State.WORKING:
             return f"{name} is working: {s.activity or 'thinking'}."
         return f"{name} is idle."
@@ -243,8 +245,10 @@ class Board:
         if not s:
             return self.toast("no session", Status.FAIL)
         self.injected.append((s.id, what, payload))
-        if what == "text" and s.state in BUSY:
-            self._queued[s.id] = s.turns  # Claude is busy: the text waits in its queue until this turn ends
+        if what == "text" and s.state in BUSY and payload.split(" ", 1)[0] not in TALK_COMMANDS:
+            self._queued[s.id] = (s.turns, self.clock())  # Claude is busy: the text waits in its queue
+            if not self.sync:  # once it is typed, look at the screen whether it really is queued
+                threading.Timer(1.2, self.watch_now, args=(s.id,)).start()
         elif what in ("ctrl_enter", "escape"):
             self._queued.pop(s.id, None)
             self._screen_queued.discard(s.id)
@@ -314,6 +318,7 @@ class Board:
         if not text:
             return
         seen = read_screen(text)
+        self._screen_read[s.id] = self.clock()
         if seen["mode"] and seen["mode"] != s.mode:
             s.mode = seen["mode"]
             self._modes.add(seen["mode"])
@@ -321,6 +326,17 @@ class Board:
         if seen["queued"] != (s.id in self._screen_queued):
             (self._screen_queued.add if seen["queued"] else self._screen_queued.discard)(s.id)
             self.hub.version += 1
+
+    def _has_queue(self, s: Session) -> bool:
+        """Is a message waiting in the session's queue, i.e. is there something for "send now"?
+        Where the terminal's screen can be read, that decides: Claude Code shows "... to send now" exactly while
+        something waits. (It may take a queued message in the middle of a turn, or not have queued it at all.)
+        Elsewhere it is a guess: the deck sent text while Claude was busy, the turn has not ended, and it is recent."""
+        sent = self._queued.get(s.id)
+        read = self._screen_read.get(s.id)
+        if read is not None and (sent is None or read > sent[1] + 0.8):
+            return s.id in self._screen_queued
+        return sent is not None and sent[0] == s.turns and self.clock() - sent[1] < QUEUE_GUESS_S
 
     def _watch_loop(self) -> None:
         """The selected session about once a second (and at once when you select another one or press the mode
@@ -601,6 +617,13 @@ class Board:
             self.toast(text or "heard nothing", Status.OK if text else Status.WARN, 4)
         elif not text:
             self.toast("heard nothing", Status.WARN)
+        elif purpose in TALK_COMMANDS:  # e.g. "/btw what does this function return?"
+            s = self.hub.sessions.get(target) if target else None
+            if not s:
+                return self.toast("session is gone", Status.FAIL, 4)
+            self._type("text", f"{purpose} {text}", s.id)
+            self.toast(f"asked {self.name_of(s)}")
+            self._go("main")
         elif self.cfg.speech.review_dictation:
             self.review = text  # shown on the top row; MIC sends, the cross discards
         else:
@@ -659,7 +682,7 @@ class Board:
         status = s.state.status
         if s.state == State.WORKING and s.activity:
             word = s.activity
-        hears = self.take_for == "prompt" and self.take_target == s.id
+        hears = (self.take_for == "prompt" or self.take_for in TALK_COMMANDS) and self.take_target == s.id
         if hears and self.take:
             icon, word, status = "mic", "listening", Status.OK
         elif hears and self._sending:
@@ -827,7 +850,7 @@ class Board:
             # Ctrl+Enter: text the deck sent while Claude is busy waits in its queue; this sends it now. Shown from
             # then until the turn ends (Claude Code does not tell when it takes a queued message, and it reports a
             # queued prompt as submitted right away, so that cannot be used). Text typed on the keyboard is not seen here.
-            if self._queued.get(cur.id) == cur.turns or cur.id in self._screen_queued:
+            if self._has_queue(cur):
                 keys[6] = Key(Face(kind="icon", icon="send", status=Status.OK, label="send now", caption="queued"),
                               tap=lambda: (self._type("ctrl_enter"), self.toast("send now")))
         keys[4] = Key(Face(kind="icon", icon="gear", label="settings", accent=ACCENT), tap=lambda: self._go("settings"))
@@ -857,7 +880,7 @@ class Board:
                            tap=lambda: self.speaker.repeat())
         if cur and self.cfg.slash:
             keys[14] = Key(Face(kind="icon", icon="slash", label="commands", accent=ACCENT), tap=lambda: self._go("commands"))
-        if cur and cur.id in self._queued and self._queued[cur.id] != cur.turns:
+        if cur and cur.id in self._queued and self._queued[cur.id][0] != cur.turns:
             del self._queued[cur.id]  # the turn ended: Claude takes what was queued
         if self.take or self.review is not None:  # transcript across the top row
             keys.update(self._transcript_keys())
@@ -909,25 +932,43 @@ class Board:
             self._go("main")
 
         items = []
+        stt = self._new_take is not None
         for cmd in self.cfg.slash:
+            if cmd.strip() in TALK_COMMANDS:
+                # a command that needs words, e.g. /btw: a side question Claude answers while it keeps working.
+                # Hold the key and ask; on release "/btw <what you said>" is sent.
+                if self.take and self.take_for == cmd.strip():
+                    items.append(Key(self._listening_face()))
+                elif self._sending == cmd.strip():
+                    items.append(Key(Face(kind="icon", icon="send", label="sending", status=Status.OK)))
+                else:
+                    ok = bool(cur) and stt
+                    items.append(Key(Face(kind="text", text=cmd.strip(), label="hold: ask" if ok else "no speech key",
+                                          status=Status.OK if ok else None, disabled=not ok),
+                                     tap=(lambda: self.toast("hold and ask", Status.WARN)) if ok else None,
+                                     talk=(lambda c=cmd.strip(): self._talk_start(c), self._talk_finish) if ok else None))
+                continue
             danger = cmd.strip().split()[0] in ("/clear", "/exit", "/quit")
             face = Face(kind="text", text=cmd, label="hold" if danger else "command", status=Status.WARN if danger else None)
             act = (lambda c=cmd: send(c)) if cur else None
             items.append(Key(face, confirm=act, colour=COLORS[Status.WARN]) if danger else Key(face, tap=act))
         return self._paged(items)
 
+    def _listening_face(self) -> Face:
+        """Level bars that follow your voice; if nothing arrives for a moment, it says so instead of looking busy."""
+        heard = max(self._levels[-9:] or [0.0]) > 0.03
+        ready = getattr(self.take, "ready", True)
+        return Face(kind="bars", spark=[round(v, 2) for v in self._levels[-9:]], label="listening" if ready else "starting",
+                    status=Status.OK if heard else Status.WARN,
+                    caption="wait" if not ready else "hearing you" if heard else
+                    ("no sound" if len(self._levels) >= 9 else "speak"))
+
     def _transcript_keys(self) -> dict[int, Key]:
         """While dictating: only the held key changes, to a level meter that says "listening".
         The text is not shown on the keys; it goes to Claude when the key is released.
         (With review_dictation on, the finished text is laid out on the top row to check.)"""
         if self.take:
-            heard = max(self._levels[-9:] or [0.0]) > 0.03
-            # level bars that follow your voice; if nothing arrives for a moment, say so instead of looking busy
-            ready = getattr(self.take, "ready", True)
-            face = Face(kind="bars", spark=[round(v, 2) for v in self._levels[-9:]], label="listening" if ready else "starting",
-                        status=Status.OK if heard else Status.WARN,
-                        caption="wait" if not ready else "hearing you" if heard else
-                        ("no sound" if len(self._levels) >= 9 else "speak"))
+            face = self._listening_face()
             if self._latched is not None:  # started with a tap: this key sends, the cross drops it
                 face.label = "tap to send"
                 return {10: Key(face, tap=self._talk_finish),

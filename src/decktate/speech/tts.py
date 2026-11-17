@@ -17,7 +17,7 @@ from pathlib import Path
 import httpx
 
 from ..config import Config
-from ..core.redact import redact
+from ..core.redact import pieces, redact
 from .audio import Player, chime
 
 API = "https://api.elevenlabs.io"
@@ -130,6 +130,7 @@ class Speaker:
         self._q: queue.Queue = queue.Queue()
         self._cache = cfg.home / "tts-cache"
         self._generation = 0
+        self._talking = False  # in the middle of a text (also between two pieces of it)
         threading.Thread(target=self._run, daemon=True, name="speaker").start()
 
     def _pick_engine(self):
@@ -148,7 +149,7 @@ class Speaker:
 
     @property
     def speaking(self) -> bool:
-        return self.player.playing or not self._q.empty()
+        return self.player.playing or self._talking or not self._q.empty()
 
     def stop(self) -> None:
         self._generation += 1
@@ -197,19 +198,28 @@ class Speaker:
                 if cache and path.exists():
                     self.player.play(path.read_bytes(), RATE)
                     continue
-                collected: list[bytes] = []
+                self._talking = True
+                # a long text is spoken piece by piece: the voice starts at once, and "quiet" ends it between pieces too
+                for part in pieces(text):
+                    if generation != self._generation:
+                        break
+                    collected: list[bytes] = []
 
-                def tee():
-                    for chunk in self.engine.stream(text):
-                        collected.append(chunk)
-                        yield chunk
+                    def tee(part=part, collected=collected):
+                        for chunk in self.engine.stream(part):
+                            collected.append(chunk)
+                            yield chunk
 
-                finished = self.player.play(tee(), RATE)
-                self.error = self.player.error
-                if cache and finished and collected:
-                    self._cache.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(b"".join(collected))
+                    finished = self.player.play(tee(), RATE)
+                    self.error = self.player.error
+                    if not finished:
+                        break
+                    if cache and collected and part == text:
+                        self._cache.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(b"".join(collected))
             except TTSError as exc:
                 self.error = str(exc)
             except Exception as exc:
                 self.error = f"{type(exc).__name__}: {exc}"
+            finally:
+                self._talking = False

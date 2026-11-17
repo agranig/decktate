@@ -335,7 +335,7 @@ def test_session_keys_blink_select_and_speak(tmp_path):
     a, b = r.face(0), r.face(1)                                    # each on its own key
     assert (a.text, a.icon, a.value, a.blink, a.pulse) == ("alpha", "running", "Bash", False, True)
     assert (b.text, b.icon, b.value, b.blink, b.solid) == ("beta", "check", "done", True, True)
-    assert r.face(2) is None and r.face(MORE) is None and r.speaker.said[-1] == "beta finished. Done. The parser now handles nested lists."
+    assert r.face(2) is None and r.face(MORE) is None and r.speaker.said[-1] == "beta finished. Done. The parser now handles nested lists. (code). Third sentence. Fourth."
     before = r.deck.images[1].tobytes()
     r.advance(0.4)
     assert r.deck.images[1].tobytes() != before                    # it blinks
@@ -585,6 +585,14 @@ def test_a_mode_switched_in_the_terminal_shows_on_the_deck(tmp_path):
     r.board._watch(a)
     r.board.tick()
     assert r.face(MODE).caption == "auto" and r.face(SEND) is None
+    r.hub.handle({"hook_event_name": "UserPromptSubmit", "session_id": "a"})
+    r.hold(MIC, 1.0)                                                # the deck sends text while Claude is busy:
+    assert r.face(SEND).label == "send now"                         # offered at once ...
+    r.advance(1.0)
+    r.screens["a"] = SCREEN % ("", "⏵⏵ auto mode on (shift+tab to cycle)")   # ... but Claude took it straight away
+    r.board._watch(a)
+    r.board.tick()
+    assert r.face(SEND) is None                                     # the screen decides: the key goes away, not at the turn's end
     r.screens["a"] = None                                           # a terminal that cannot be read: nothing changes
     r.board._watch(a)
     assert a.mode == "auto"
@@ -814,7 +822,12 @@ def test_commands_page_mode_and_stop(tmp_path):
     r.hub.handle({"hook_event_name": "UserPromptSubmit", "session_id": "a"})   # reported when it is queued, not when it is taken:
     r.hub.handle({"hook_event_name": "PreToolUse", "session_id": "a", "tool_name": "Bash", "tool_input": {}})
     r.advance(5)
-    assert r.face(SEND).label == "send now"                      # the key stays for as long as the turn runs
+    assert r.face(SEND).label == "send now"                      # the key stays while the turn runs ...
+    r.advance(45)
+    assert r.face(SEND) is None                                    # ... but not for ever, when the screen cannot be read
+    r.hold(MIC, 1.0)
+    r.advance(3)
+    assert r.face(SEND).label == "send now"
     r.hub.handle({"hook_event_name": "Stop", "session_id": "a", "last_assistant_message": "ok"})   # the turn ends: Claude takes it
     r.hub.handle({"hook_event_name": "UserPromptSubmit", "session_id": "a"})
     r.board.tick()
@@ -993,8 +1006,17 @@ def test_secrets_are_redacted_before_speech():
     assert redact("run the tests in src/parser") == "run the tests in src/parser"
     said = speakable("## Summary\n\nI updated `/Users/me/projects/app/src/parser.py` and ran the tests. "
                      "See [the docs](https://example.com/docs).\n\n```bash\npytest\n```\nMore. Even more.", 2)
-    assert said == "Summary I updated parser.py and ran the tests. See the docs."
+    assert said == "Summary. I updated parser.py and ran the tests."   # the heading is a sentence of its own
     assert len(speakable("word " * 400, 5)) <= 325
+    whole = speakable("## Result\n\nAll **three** bugs are fixed.\n\n- parser: nested lists\n- cli: `--json` flag\n\n"
+                      "| File | Change |\n| --- | --- |\n| a.py | fixed |\n\n```py\nprint(1)\n```\n\nNext: " + "more text. " * 60)
+    assert whole.startswith("Result. All three bugs are fixed. parser: nested lists. cli: --json flag. File, Change. a.py, fixed. (code). Next:")
+    assert whole.count("more text.") == 60 and "|" not in whole and "```" not in whole      # nothing is cut off
+    from decktate.core.redact import pieces
+    parts = pieces(whole)
+    assert len(parts) > 1 and all(len(x) <= 600 for x in parts) and " ".join(parts) == whole
+    assert all(x[-1] in ".!?:;" for x in parts) and pieces("") == [] and pieces("Short.") == ["Short."]
+    assert max(len(x) for x in pieces("x" * 100 + " " + "y" * 900 + " z", 300)) <= 300
 
 
 # ------------------------------------------------------------------ http server
@@ -1244,6 +1266,30 @@ def test_injector_is_chosen_from_the_session_environment():
     assert type(unknown) is Injector
     with pytest.raises(InjectError):
         unknown.send_text("hi")
+
+
+def test_btw_asks_a_side_question_by_voice_while_claude_works(tmp_path):
+    r = Rig(tmp_path, slash=["/btw", "/compact"])
+    r.hub.handle({"hook_event_name": "SessionStart", "session_id": "a", "cwd": "/w/a"})
+    r.hub.handle({"hook_event_name": "UserPromptSubmit", "session_id": "a"})      # Claude is busy
+    r.board.tick()
+    r.tap(COMMANDS)
+    assert (r.face(0).text, r.face(0).label, r.face(1).text) == ("/btw", "hold: ask", "/compact")
+    r.tap(0)                                                       # a tap sends nothing: the command needs words
+    assert r.typed == [] and r.face(TOAST).text == "hold and ask"
+    r.advance(3)
+    r.deck.press(0)
+    r.advance(0.6)
+    assert (r.face(0).kind, r.face(0).label) == ("bars", "listening") and r.board.page == "commands"
+    r.deck.release(0)
+    r.board.tick()
+    assert r.typed == [("text", "/btw please add tests for the parser")]          # sent as one command
+    assert r.board.page == "main" and r.face(TOAST).text == "asked a"
+    assert r.face(SEND) is None                                    # it is answered on the side: nothing waits in the queue
+    nokey = Rig(tmp_path / "n", take=None, slash=["/btw"])
+    nokey.hub.handle({"hook_event_name": "SessionStart", "session_id": "a", "cwd": "/w/a"})
+    nokey.tap(COMMANDS)
+    assert nokey.face(0).disabled and nokey.face(0).label == "no speech key"
 
 
 def test_typing_failures_show_on_the_deck_and_never_crash(tmp_path):

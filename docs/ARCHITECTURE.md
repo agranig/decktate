@@ -135,8 +135,10 @@ and at once when it is selected; the others every six seconds.
   is finalized. The text goes to the session that was selected when the key
   went down.
 - **Voice.** ElevenLabs (`/v1/text-to-speech/<voice>/stream`, 24 kHz PCM)
-  or the Mac's `say`. Text is reduced to its first sentences, code blocks
-  are dropped, and keys, tokens and passwords are redacted first. With the
+  or the Mac's `say`. Markup is removed, code blocks are skipped, and keys,
+  tokens and passwords are redacted first. A finished answer is read out in
+  full, split at sentence ends into pieces of about 600
+  characters, so the voice starts at once and can be stopped between pieces. With the
   Mac's volume at zero nothing is spoken and no voice is requested.
 
 ## Safety
@@ -198,5 +200,7 @@ speech and fake terminals.
 - Two things rely on Claude Code internals that are not documented and may
   change: the session files in `~/.claude/sessions`, and the wording of the
   mode line on its screen.
-- Claude Code does not report when it takes a queued message, so the
-  *send now* key stays until the turn ends.
+- Claude Code does not report when it takes a queued message. In iTerm2 and
+  Terminal.app the *send now* key follows what the screen says; in other
+  terminals it is offered for 45 seconds after the deck sent text to a busy
+  session, or until the turn ends.
