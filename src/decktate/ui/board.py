@@ -35,6 +35,7 @@ BUSY = (State.WORKING, State.PERMISSION, State.QUESTION)  # Claude is in a turn:
 DETACHED_KEEP_DAYS = 30  # how long a detached session is remembered
 TALK_COMMANDS = ("/btw",)  # slash commands that take what you say: /btw asks a side question while Claude keeps working
 QUEUE_GUESS_S = 45  # without a readable screen: how long "send now" is offered after the deck queued text
+RUNNING_KEY = 13  # shells, monitors and subagents of the selected session (a result note takes its place for a moment)
 DISCARD_KEY = 12  # always here: one key away from the mic key, so that a slip of the finger does not drop a dictation
 RETURN_S = 4  # a session that ends and starts again in the same terminal within this time keeps its key and stays selected
 LATCH_MAX_S = 300  # a dictation started with a tap is dropped if nobody ends it for this long
@@ -103,6 +104,7 @@ class Board:
         self._alive = alive or discover_mod.alive
         self._screen_of = screen_of or screen_text  # (session id, terminal) -> the text on its screen, or None
         self._screen_queued: set[str] = set()  # sessions whose screen says a message is waiting to be sent
+        self._background: dict[str, dict] = {}  # session -> what its screen says runs in the background: {"shells": 2, ...}
         self._watch_now = threading.Event()
         self._watch_first: str | None = None
         self._closed = False
@@ -322,6 +324,9 @@ class Board:
         if seen["mode"] and seen["mode"] != s.mode:
             s.mode = seen["mode"]
             self._modes.add(seen["mode"])
+            self.hub.version += 1
+        if seen["running"] is not None and seen["running"] != self._background.get(s.id):
+            self._background[s.id] = seen["running"]
             self.hub.version += 1
         if seen["queued"] != (s.id in self._screen_queued):
             (self._screen_queued.add if seen["queued"] else self._screen_queued.discard)(s.id)
@@ -798,6 +803,27 @@ class Board:
         if not self.sync:  # then look what Claude Code really switched to
             threading.Timer(0.9, self.watch_now, args=(s.id,)).start()
 
+    def background(self, s: Session) -> dict:
+        """What the session has running besides its own turn: background shells and monitors (as its terminal
+        screen counts them) and subagents (from the hooks, or the screen's count of background agents if higher).
+        Only what is not zero: {"shells": 2, "agents": 1}."""
+        seen = self._background.get(s.id) or {}
+        counts = {"shells": seen.get("shells", 0), "monitors": seen.get("monitors", 0),
+                  "agents": max(s.subagents, seen.get("agents", 0)), "tasks": seen.get("tasks", 0)}
+        return {k: v for k, v in counts.items() if v}
+
+    def _running_key(self, s: Session | None) -> Key | None:
+        """One key for everything that runs in the background of the selected session; dark when nothing does.
+        Tap: hear it."""
+        if not s:
+            return None
+        counts = self.background(s)
+        if not counts:
+            return None
+        said = " and ".join(f"{n} {name if n != 1 else name[:-1]}" for name, n in counts.items())
+        return Key(Face(kind="counts", stats=counts, status=Status.RUNNING),
+                   tap=lambda: self.say(f"{self.name_of(s)} has {said} running."))
+
     def _stats_key(self, s: Session | None) -> Key | None:
         """Quota, context and cost at a glance; tap for the full stats page."""
         if not s:
@@ -855,6 +881,7 @@ class Board:
                               tap=lambda: (self._type("ctrl_enter"), self.toast("send now")))
         keys[4] = Key(Face(kind="icon", icon="gear", label="settings", accent=ACCENT), tap=lambda: self._go("settings"))
         keys[8] = self._mode_key(cur)  # permission mode of the selected session; tap = Shift+Tab
+        keys[RUNNING_KEY] = self._running_key(cur)
         keys[9] = self._stats_key(cur)
         if self.review is not None:
             keys[10] = Key(Face(kind="icon", icon="send", status=Status.OK, solid=True, label="send"), tap=self._send_review)

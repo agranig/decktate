@@ -50,7 +50,7 @@ def font(size: int, weight: str = "Bold") -> ImageFont.ImageFont:
 class Face:
     """Declarative description of one key."""
 
-    kind: str = "stat"  # stat | ring | icon | text | stats | bars | session
+    kind: str = "stat"  # stat | ring | icon | text | stats | bars | session | counts
     status: Status | None = None
     value: str = ""  # the one big figure
     label: str = ""  # tiny caption above
@@ -151,6 +151,22 @@ def _stats_summary(d, st: dict, W: float, H: float, u: float) -> None:
     y = step * 3.5
     d.text((left, y), "cost", font=f, fill=MUTED, anchor="lm")
     d.text((right, y), "–" if cost is None else f"${cost:.2f}" if cost < 1000 else f"${cost:.0f}", font=f, fill=TEXT, anchor="rm")
+
+
+def _counts(d, counts: dict, W: float, H: float, u: float, colour) -> None:
+    """What runs in the background, one row each: the number, large, and the word, e.g.  2 shells / 1 monitor / 3 agents."""
+    rows = [(n, name if n != 1 else name[:-1]) for name, n in counts.items()][:4]
+    size = {1: 20, 2: 18, 3: 15}.get(len(rows), 12)
+    fn, fw = font(int(size * u), "Bold"), font(int(min(11.5, size * 0.72) * u), "Semibold")
+    num_w = max(d.textlength(str(n), font=fn) for n, _ in rows)
+    word_w = max(d.textlength(word, font=fw) for _, word in rows)
+    x0 = (W - (num_w + 4 * u + word_w)) / 2
+    step = min(H / len(rows), size * u * 1.45)
+    y = H / 2 - step * (len(rows) - 1) / 2
+    for n, word in rows:
+        d.text((x0 + num_w, y), str(n), font=fn, fill=colour, anchor="rm")
+        d.text((x0 + num_w + 4 * u, y + 0.5 * u), word, font=fw, fill=TEXT, anchor="lm")
+        y += step
 
 
 def _level_bars(d, levels: list[float], cx: float, top: float, bottom: float, W: float, u: float, colour) -> None:
@@ -344,6 +360,8 @@ def _render_key(face: Face, size, phase: float) -> Image.Image:
             _text(d, (cx, mid), face.value, 17 * u, TEXT, "Bold", max_w=2 * r - wd * 2.6)
     elif face.kind == "stats":
         _stats_summary(d, face.stats or {}, W, H, u)
+    elif face.kind == "counts":
+        _counts(d, face.stats or {}, W, H, u, colour)
     elif face.kind == "session":
         _session(d, face, W, H, u, colour)
     elif face.kind == "bars":

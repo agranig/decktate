@@ -557,7 +557,7 @@ SCREEN = """⏺ Done.
 def test_a_mode_switched_in_the_terminal_shows_on_the_deck(tmp_path):
     from decktate.inject import read_screen
 
-    assert read_screen(SCREEN % ("", "⏸ plan mode on (shift+tab to cycle)")) == {"mode": "plan", "queued": False}
+    assert read_screen(SCREEN % ("", "⏸ plan mode on (shift+tab to cycle)")) == {"mode": "plan", "queued": False, "running": {}}
     assert read_screen(SCREEN % ("x", "⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt"))["mode"] == "auto"
     assert read_screen(SCREEN % ("", "⏵⏵ accept edits on (shift+tab to cycle)"))["mode"] == "acceptEdits"
     assert read_screen(SCREEN % ("", "⏵⏵ bypass permissions on (shift+tab to cycle)"))["mode"] == "bypassPermissions"
@@ -598,6 +598,52 @@ def test_a_mode_switched_in_the_terminal_shows_on_the_deck(tmp_path):
     assert a.mode == "auto"
     r.tap(MODE)                                                     # the deck has seen "auto": Shift+Tab leads on to manual
     assert r.face(MODE).caption == "manual"
+
+
+def test_shells_monitors_and_agents_on_one_key(tmp_path):
+    from decktate.inject import read_screen
+
+    foot = "⏵⏵ auto mode on · %s · esc to interrupt · ↓ to manage"
+    assert read_screen(SCREEN % ("", foot % "1 shell"))["running"] == {"shells": 1}
+    assert read_screen(SCREEN % ("", foot % "2 shells, 1 monitor"))["running"] == {"shells": 2, "monitors": 1}
+    assert read_screen(SCREEN % ("", foot % "3 background agents"))["running"] == {"agents": 3}
+    assert read_screen(SCREEN % ("", foot % "4 background tasks"))["running"] == {"tasks": 4}
+    assert read_screen(SCREEN % ("", "⏸ plan mode on (shift+tab to cycle)"))["running"] == {}     # nothing runs
+    assert read_screen("Do you want to proceed?\n❯ 1. Yes")["running"] is None                     # cannot be told
+    assert read_screen(SCREEN % ("", foot % "1 shell"))["mode"] == "auto"                           # the mode is still read
+
+    RUN = 13
+    r = Rig(tmp_path)
+    r.hub.handle({"hook_event_name": "SessionStart", "session_id": "a", "cwd": "/w/a"})
+    a = r.hub.sessions["a"]
+    r.board.tick()
+    assert r.face(RUN) is None                                     # nothing in the background: the key is dark
+    r.screens["a"] = SCREEN % ("", foot % "2 shells, 1 monitor")
+    r.board._watch(a)
+    r.hub.handle({"hook_event_name": "SubagentStart", "session_id": "a"})
+    r.board.tick()
+    assert (r.face(RUN).kind, r.face(RUN).stats) == ("counts", {"shells": 2, "monitors": 1, "agents": 1})
+    r.tap(RUN)                                                     # tap: hear it
+    assert r.speaker.said[-1] == "a has 2 shells and 1 monitor and 1 agent running."
+    r.screens["a"] = "Do you want to proceed?\n❯ 1. Yes"           # a dialog hides the footer: the count is kept
+    r.board._watch(a)
+    r.board.tick()
+    assert r.face(RUN).stats["shells"] == 2
+    r.hub.handle({"hook_event_name": "SubagentStop", "session_id": "a"})
+    r.screens["a"] = SCREEN % ("", foot % "1 shell")
+    r.board._watch(a)
+    r.board.tick()
+    assert r.face(RUN).stats == {"shells": 1}
+    r.hold(MIC, 1.0)                                               # a result note takes another free key, not this one
+    assert r.face(RUN).kind == "counts" and r.face(DISCARD).text.startswith("sent to")
+    r.advance(3)
+    r.screens["a"] = SCREEN % ("", "⏵⏵ auto mode on (shift+tab to cycle)")   # the shell finished
+    r.board._watch(a)
+    r.board.tick()
+    assert r.face(RUN) is None
+    from decktate.ui.render import render_key, Face
+    for counts in ({"shells": 1}, {"shells": 12, "monitors": 3}, {"shells": 2, "monitors": 1, "agents": 4, "tasks": 7}):
+        assert render_key(Face(kind="counts", stats=counts, status=Status.RUNNING), (72, 72)).size == (72, 72)
 
 
 def test_stats_are_there_again_after_a_restart_and_the_quota_is_shared(tmp_path):

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -328,9 +329,14 @@ MODE_WORDS = (("accept edits on", "acceptEdits"), ("plan mode on", "plan"), ("au
               ("bypass permissions on", "bypassPermissions"), ("don't ask", "dontAsk"))
 
 
+RUNNING_WORDS = (("shells", r"\b(\d+) shells?\b"), ("monitors", r"\b(\d+) monitors?\b"),
+                 ("agents", r"\b(\d+) (?:background )?agents?\b"), ("tasks", r"\b(\d+) (?:background )?tasks?\b"))
+
+
 def read_screen(text: str) -> dict:
     """What Claude Code shows at the bottom of its screen: {"mode": the permission mode or None if it cannot be
-    told, "queued": a message is waiting ("... to send now")}.
+    told, "queued": a message is waiting ("... to send now"), "running": what runs in the background, e.g.
+    {"shells": 2, "monitors": 1} ({} = nothing, None = cannot be told)}.
 
     The mode line is under the prompt box ("⏵⏵ auto mode on (shift+tab to cycle)"); the normal mode shows
     nothing there, so it is only reported when the prompt box itself is on the screen (not while a dialog is)."""
@@ -343,7 +349,14 @@ def read_screen(text: str) -> dict:
         if b - a <= 12 and any(lines[i][:1] in "❯>" for i in range(a + 1, b)):
             box = (a, b)
     footer = low[box[1] + 1:] if box else low
-    for words, mode in MODE_WORDS:
-        if any(words in ln for ln in footer):
-            return {"mode": mode, "queued": queued}
-    return {"mode": "default" if box else None, "queued": queued}
+    # what runs in the background, as Claude Code counts it next to the mode: "· 2 shells, 1 monitor ·",
+    # "· 1 background agent ·", or "· 3 background tasks ·" when they are of different kinds
+    running = None
+    if box:
+        running = {}
+        for name, pattern in RUNNING_WORDS:
+            found = [int(m.group(1)) for ln in footer for m in re.finditer(pattern, ln)]
+            if found:
+                running[name] = max(found)
+    mode = next((mode for words, mode in MODE_WORDS if any(words in ln for ln in footer)), "default" if box else None)
+    return {"mode": mode, "queued": queued, "running": running}

@@ -79,7 +79,14 @@ def main(out: Path) -> list[Path]:
                   "context_window": {"used_percentage": 91},
                   "rate_limits": {"five_hour": {"used_percentage": 81, "resets_at": time.time() + 7800},
                                   "seven_day": {"used_percentage": 44}}})
+    r.screens["s1"] = "─" * 40 + "\n❯ \n" + "─" * 40 + "\n⏵⏵ auto mode on · 2 shells, 1 monitor · esc to interrupt"
+    r.board._watch(h.sessions["s1"])
+    h.handle({"hook_event_name": "SubagentStart", "session_id": "s1"})
+    h.sessions["s1"].mode = "default"
     shot("1-main")
+    r.screens["s1"] = None
+    r.board._background.clear()
+    h.handle({"hook_event_name": "SubagentStop", "session_id": "s1"})
     t, box = r.post(BASH)
     shot("2-permission")
     r.deck.press(7)

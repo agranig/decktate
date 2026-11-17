@@ -75,7 +75,7 @@ Settings > Privacy & Security > Accessibility.
 ```
 [ session ] [ session       ] [ session ] [ +N more ] [ settings ]
 [ reject  ] [ approve       ] [ always  ] [ mode    ] [ stats    ]
-[ talk    ] [ speak         ] [ discard ] [ result  ] [ commands ]
+[ talk    ] [ speak         ] [ discard ] [ running ] [ commands ]
 ```
 
 A key that has nothing to do right now stays dark.
@@ -136,6 +136,9 @@ A key that has nothing to do right now stays dark.
   auto) and switches to the next one, like Shift+Tab.
 - **Stats** shows the 5-hour and 7-day quota, context and cost at a glance.
   Tap it for the details.
+- **Running** (bottom row) appears while the session has something going
+  on in the background: the number of shells, monitors and subagents. Tap it
+  to hear it.
 - **Commands** opens your slash commands (`/compact`, `/clear`, ...).
   **/btw** is special: hold it and ask a question out loud. Claude answers
   on the side while it keeps working on its task.
