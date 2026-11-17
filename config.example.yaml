@@ -7,7 +7,7 @@ port: 47873                   # hooks are served on 127.0.0.1:<port>; restart De
 brightness: 60
 permission_hold_s: 120        # how long a request waits for a key before the terminal asks instead
 auto_hooks: true              # add the hooks when Decktate starts, remove them when it quits
-slash: ["/compact", "/clear", "/review", "/context", "/usage", "/resume"]   # the "/" page, any number; /clear needs the confirm hold
+slash: ["/btw", "/compact", "/clear", "/review", "/context", "/usage", "/resume"]   # the "/" page, any number; /clear needs the confirm hold; /btw is asked by voice
 mute_projects: []             # project paths that are never spoken, e.g. ["/Users/me/work/secret"]
 
 speech:
@@ -18,7 +18,6 @@ speech:
   language: en                # en | de | multi
   speak_permissions: true     # read out what a permission request wants
   speak_on_stop: true         # read the first sentences of what Claude finished
-  max_sentences: 2
   review_dictation: false     # true: show dictated text first and send it with a second tap
   speed: 1.2                  # talking speed (1.0 = normal); ElevenLabs allows 0.7 to 1.2
   keyterms: ["Claude", "refactor", "commit", "pull request", "pytest"]   # words dictation should get right

@@ -336,7 +336,7 @@ def read_screen(text: str) -> dict:
     nothing there, so it is only reported when the prompt box itself is on the screen (not while a dialog is)."""
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()][-16:]
     low = [ln.lower() for ln in lines]
-    queued = any("to send now" in ln for ln in low)
+    queued = any("to send now" in ln or "queued \u00b7" in ln for ln in low)   # "Queued · ctrl+enter to send now"
     borders = [i for i, ln in enumerate(lines) if len(ln) >= 20 and set(ln) <= set("─━═")]
     box = None
     for a, b in zip(borders, borders[1:]):

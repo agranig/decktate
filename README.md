@@ -123,7 +123,8 @@ A key that has nothing to do right now stays dark.
 
 ### Listening
 
-- When a session finishes, the first sentences of its answer are read out.
+- When a session finishes, its whole answer is read out (code blocks are
+  skipped).
 - **Speak** repeats the last message. While the voice is talking, the key
   turns into **quiet**.
 - Turn the Mac's volume down to zero and nothing is spoken; the key then
@@ -136,6 +137,8 @@ A key that has nothing to do right now stays dark.
 - **Stats** shows the 5-hour and 7-day quota, context and cost at a glance.
   Tap it for the details.
 - **Commands** opens your slash commands (`/compact`, `/clear`, ...).
+  **/btw** is special: hold it and ask a question out loud. Claude answers
+  on the side while it keeps working on its task.
 
 ### Settings
 

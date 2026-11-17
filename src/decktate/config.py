@@ -22,7 +22,6 @@ class Speech:
     language: str = "en"  # en | de | multi
     speak_permissions: bool = True
     speak_on_stop: bool = True
-    max_sentences: int = 2
     review_dictation: bool = False  # True: show the dictated text first and send it with a second tap
     speed: float = 1.2  # talking speed; 1.0 is normal. ElevenLabs accepts 0.7 to 1.2, the system voice up to 2.0
     keyterms: list[str] = field(default_factory=lambda: ["Claude", "refactor", "commit", "pull request", "pytest"])
@@ -43,7 +42,7 @@ class Config:
     confirm_ms: int = 1200
     permission_hold_s: float = 120  # how long a permission request waits for a key before the terminal takes over
     auto_hooks: bool = True  # add the hooks to Claude Code's settings on start and remove them on shutdown
-    slash: list[str] = field(default_factory=lambda: ["/compact", "/clear", "/review", "/context", "/usage", "/resume"])
+    slash: list[str] = field(default_factory=lambda: ["/btw", "/compact", "/clear", "/review", "/context", "/usage", "/resume"])
     mute_projects: list[str] = field(default_factory=list)  # project paths that are never spoken
     speech: Speech = field(default_factory=Speech)
     audio: Audio = field(default_factory=Audio)
