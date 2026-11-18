@@ -117,6 +117,7 @@ class Board:
         self._alive = alive or discover_mod.alive
         self._screen_of = screen_of or screen_text  # (session id, terminal) -> the text on its screen, or None
         self._screen_queued: set[str] = set()  # sessions whose screen says a message is waiting to be sent
+        self._log_lock = threading.Lock()
         self._seen_before: dict[str, dict] = {}  # debugging: the last screen reading that was logged per session
         self._slots_logged: list = []
         hub.trace = lambda line: self.note(line, debug=True)
@@ -264,17 +265,19 @@ class Board:
             return
         try:
             path = self.cfg.home / "activity.log"
-            if path.exists() and path.stat().st_size > 2_000_000:  # keep it small: start over
-                path.unlink()
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(fd, "a") as f:
-                stamp = time.strftime("%Y-%m-%d %H:%M:%S") + f".{int(time.time() * 1000) % 1000:03d}"
-                f.write(f"{stamp} {'  ' if debug else ''}{what}\n")
+            with self._log_lock:  # several threads write: checking the size, starting over and appending are one step
+                if path.exists() and path.stat().st_size > 2_000_000:  # keep it small: start over
+                    path.unlink()
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                with os.fdopen(fd, "a") as f:
+                    stamp = time.strftime("%Y-%m-%d %H:%M:%S") + f".{int(time.time() * 1000) % 1000:03d}"
+                    f.write(f"{stamp} {'  ' if debug else ''}{what}\n")
         except OSError:
             pass
 
-    def toast(self, text: str, status: Status = Status.OK, seconds: float = 2.2) -> None:
-        self.note(f"shown: {text!r} ({status.value})")
+    def toast(self, text: str, status: Status = Status.OK, seconds: float = 2.2, logged: str | None = None) -> None:
+        """logged: what goes into the activity log instead, when the note itself is something that was said."""
+        self.note(f"shown: {text!r} ({status.value})" if logged is None else f"shown: {logged} ({status.value})")
         self._toast = (text, status, self.clock() + seconds)
 
     def _type(self, what: str, payload: str = "", session: str | None = None) -> None:
@@ -723,7 +726,9 @@ class Board:
         if purpose == "reason":
             self._decide("deny", text)
         elif purpose == "test":
-            self.toast(text or "heard nothing", Status.OK if text else Status.WARN, 4)
+            # the microphone test shows what it heard on the deck; the log only gets how much that was
+            self.toast(text or "heard nothing", Status.OK if text else Status.WARN, 4,
+                       logged=f"what the microphone test heard, {len(text.split())} words" if text else None)
         elif not text:
             self.toast("heard nothing", Status.WARN)
         elif purpose in TALK_COMMANDS:  # e.g. "/btw what does this function return?"

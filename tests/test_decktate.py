@@ -1459,6 +1459,12 @@ def test_activity_log_says_what_happened_without_the_words(tmp_path):
                  "key 10 down on page main: talk to", "key 10 up after", "tap: listening hands-free", "key 12 down on page main: discard"):
         assert part in log, part
     assert "parser" not in log
+    r.advance(3)
+    r.tap(SETTINGS), r.tap(1)                                      # the microphone page: its test shows what it heard ...
+    r.hold(2, 1.0)
+    assert r.face(TOAST).text == "please add tests for the parser"
+    log = (tmp_path / "activity.log").read_text()
+    assert "what the microphone test heard, 6 words" in log and "parser" not in log   # ... but the log does not get the words
 
 
 def test_typing_failures_show_on_the_deck_and_never_crash(tmp_path):
