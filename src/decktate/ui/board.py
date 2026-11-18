@@ -169,6 +169,7 @@ class Board:
         self.menu: dict = {}  # progress through the questions of the pending menu
         self.injected: list[tuple[str, str, str]] = []  # (session, what, payload), for tests and the log
         self._shown: dict[int, Key] = {}  # the keys as they were drawn last
+        self._guard = getattr(deck, "guard", None) or threading.RLock()
         self._action_state: tuple = ()  # what decides the keys' actions; a change is reported to the deck
         self._typing: queue.Queue = queue.Queue()  # terminal input waiting to be typed, in order
         if not sync:  # exactly one worker, started here: two could type a text and its Enter in the wrong order
@@ -1536,33 +1537,36 @@ class Board:
         # the keys would be now: a request can be replaced between two looks, and the press must not act on the new one.
         self._process_input(now)
         keys = self.keys()
-        # Tell the deck when keys may now do something else than before, even if they look the same (a new
-        # request with the same wording). The simulator's web page needs this to refuse a click made on an
-        # older state; pictures alone do not say it, and a blinking key changes them without any such change.
-        cur = self.hub.current()
-        state = (self.page, self.topic, self.page_no, self.menu_for, cur.id if cur else None,
-                 id(cur.pending) if cur and cur.pending else 0, self.menu.get("index") if cur and cur.pending else None,
-                 bool(self.take), self._latched is not None, self.review is not None, tuple(self._slots))
-        if state != self._action_state:
-            self._action_state = state
-            if hasattr(self.deck, "actions"):
-                self.deck.actions += 1
-        size = self.deck.key_size
-        prog = self.confirm_progress(now)
-        for index in range(self.deck.key_count):
-            key = keys.get(index)
-            img = render_key(key.face if key else None, size, now)
-            if prog and prog[0] == index:
-                img = snake(img, prog[1], key.colour if key else TEXT)
-            raw = img.tobytes()
-            if raw != self._sent[index]:
-                self.deck.set_key_image(index, img)
-                self._sent[index] = raw  # only once it is really on the key: a failed write is tried again
-            # what this key does is published only now that its picture is on the deck
-            if key:
-                self._shown[index] = key
-            else:
-                self._shown.pop(index, None)
+        # From here to the last key, nobody may press: the deck's guard (the simulator's web page uses it)
+        # makes "what the keys do" and "what the keys show" change together.
+        with self._guard:
+            # Tell the deck when keys may now do something else than before, even if they look the same (a new
+            # request with the same wording). The simulator's web page needs this to refuse a click made on an
+            # older state; pictures alone do not say it, and a blinking key changes them without any such change.
+            cur = self.hub.current()
+            state = (self.page, self.topic, self.page_no, self.menu_for, cur.id if cur else None,
+                     id(cur.pending) if cur and cur.pending else 0, self.menu.get("index") if cur and cur.pending else None,
+                     bool(self.take), self._latched is not None, self.review is not None, tuple(self._slots))
+            if state != self._action_state:
+                self._action_state = state
+                if hasattr(self.deck, "actions"):
+                    self.deck.actions += 1
+            size = self.deck.key_size
+            prog = self.confirm_progress(now)
+            for index in range(self.deck.key_count):
+                key = keys.get(index)
+                img = render_key(key.face if key else None, size, now)
+                if prog and prog[0] == index:
+                    img = snake(img, prog[1], key.colour if key else TEXT)
+                raw = img.tobytes()
+                if raw != self._sent[index]:
+                    self.deck.set_key_image(index, img)
+                    self._sent[index] = raw  # only once it is really on the key: a failed write is tried again
+                # what this key does is published only now that its picture is on the deck
+                if key:
+                    self._shown[index] = key
+                else:
+                    self._shown.pop(index, None)
         self._save_layout()
 
     def step(self) -> str:

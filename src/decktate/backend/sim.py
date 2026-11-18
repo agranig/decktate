@@ -27,6 +27,10 @@ class SimDeck(DeckBackend):
         self.brightness = 60
         self.version = 0  # bumped on every image change
         self.actions = 0  # bumped by the board whenever a key may do something else than before (see Board.tick)
+        # Held by the board while it changes what the keys do and draws them, and by the web handler while it
+        # checks a click and passes it on: so a click is never checked against one state and acted on in another,
+        # and a picture is never served half drawn.
+        self.guard = threading.RLock()
         self._cb: KeyCallback | None = None
         self._lock = threading.Lock()
         self._server: ThreadingHTTPServer | None = None
@@ -114,7 +118,9 @@ class SimDeck(DeckBackend):
                 self.path = urlsplit(self.path).path
                 if self.path.startswith("/deck.png"):
                     buf = io.BytesIO()
-                    deck.snapshot(2).save(buf, "PNG")
+                    with deck.guard:  # a complete picture, with the state of the keys it belongs to
+                        shot = deck.snapshot(2)
+                    shot.save(buf, "PNG")
                     self._send(200, "image/png", buf.getvalue())
                 elif self.path.startswith("/version"):
                     self._send(200, "application/json", json.dumps({"v": deck.version, "a": deck.actions}).encode())
@@ -139,11 +145,12 @@ class SimDeck(DeckBackend):
                     # an older state is not a press of what is there now: the request or question behind a key
                     # may be another one, even if the key looks the same. (The picture's own version is not
                     # used for this: a blinking key changes it all the time without changing what keys do.)
-                    with deck._lock:
+                    with deck.guard:  # check and press are one step: the board cannot redraw in between
                         current = (parse_qs(url.query).get("a") or [""])[0] == str(deck.actions)
+                        if current:
+                            deck.press(key)
                     if not current:
                         return self._send(409, "text/plain", b"stale: the keys have changed")
-                    deck.press(key)
                 else:
                     deck.release(key)
                 self._send(204, "text/plain", b"")
