@@ -67,6 +67,12 @@ class HidDeck(DeckBackend):
         with self._deck:
             self._deck.set_brightness(max(0, min(100, percent)))
 
+    def alive(self) -> bool:
+        try:
+            return bool(self._deck.is_open() and self._deck.connected())
+        except Exception:
+            return False
+
     def on_key(self, callback: KeyCallback) -> None:
         self._deck.set_key_callback(lambda _deck, key, pressed: callback(key, pressed))
 

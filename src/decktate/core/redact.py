@@ -29,30 +29,55 @@ def redact(text: str) -> str:
     return text
 
 
+_STRUCTURE = re.compile(r"(#{1,6}\s+|>+\s*|[-*+]\s+|\d+[.)]\s+)")  # heading, quote, bullet, numbered item
+_TABLE_RULE = re.compile(r"\|?[ \t:|\-]*-{3,}[ \t:|\-]*\|?$")       # the rule under a table's head
+
+
 def speakable(text: str, max_sentences: int = 0, max_chars: int = 320) -> str:
     """A message as it can be read out: without code blocks, markup or secrets.
     max_sentences > 0 keeps only that many sentences (and at most max_chars); 0 keeps the whole message."""
-    text = re.sub(r"```.*?```", "\n(code)\n", text or "", flags=re.S)
-    text = re.sub(r"^[ \t]*\|?[ \t:|\-]*-{3,}[ \t:|\-]*\|?[ \t]*$", "", text, flags=re.M)   # the rule under a table's head
-    text = re.sub(r"^[ \t]*\|(.*)\|[ \t]*$", lambda m: ", ".join(c.strip() for c in m.group(1).split("|")), text,
-                  flags=re.M)                                                                  # table rows
+    # Secrets first, on the text as it came: a credential that wraps over two lines must be caught before
+    # anything is put between those lines. (There is a second pass at the end, on the finished text.)
+    text = redact(text or "")
+    text = re.sub(r"(```|~~~).*?\1", "\n\n(code)\n\n", text, flags=re.S)   # fenced code, either kind of fence
+    lines = text.split("\n")
+
+    def structural(ln: str) -> bool:
+        ln = ln.strip()
+        return bool(_STRUCTURE.match(ln)) or (ln.startswith("|") and ln.endswith("|") and len(ln) > 1)
+
+    out: list[tuple[str, bool]] = []  # (the line, a sentence ends here)
+    for n, ln in enumerate(lines):
+        raw = ln.strip()
+        if not raw or _TABLE_RULE.fullmatch(raw):
+            continue
+        own = structural(raw)  # a heading, a bullet, a table row: a line of its own
+        if raw.startswith("|") and raw.endswith("|") and len(raw) > 1:
+            raw = ", ".join(c.strip() for c in raw.strip("|").split("|"))
+        else:
+            m = _STRUCTURE.match(raw)
+            raw = raw[m.end():].strip() if m else raw
+        if not raw:
+            continue
+        nxt = lines[n + 1] if n + 1 < len(lines) else ""
+        # A sentence ends after a structural line, at the end of a paragraph, and before a structural line.
+        # A line that merely wraps inside a paragraph runs on into the next one.
+        out.append((raw, own or not nxt.strip() or structural(nxt)))
+    text = " ".join(ln + "." if ends and ln[-1] not in ".!?:;," and n < len(out) - 1 else ln
+                    for n, (ln, ends) in enumerate(out))
     text = re.sub(r"`([^`]*)`", r"\1", text)
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)          # links -> their text
-    text = re.sub(r"^\s*[#>*\-]+\s*", "", text, flags=re.M)        # headings, bullets, quotes
     text = re.sub(r"[*_]{1,3}([^*_]+)[*_]{1,3}", r"\1", text)
     text = re.sub(r"https?://\S+", "a link", text)
     text = re.sub(r"(?<![\w.])(?:~|\.{0,2})?/[\w./\-]{12,}", lambda m: m.group(0).rstrip("/").split("/")[-1], text)
-    # a heading, a bullet or a table row is a line of its own: it must not run into the next one when read out
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    text = " ".join(ln if ln[-1] in ".!?:;," or n == len(lines) - 1 else ln + "." for n, ln in enumerate(lines))
     text = redact(re.sub(r"\s+", " ", text).strip())
     if max_sentences <= 0:
         return text
     sentences = re.split(r"(?<=[.!?])\s+", text)
-    out = " ".join(sentences[:max_sentences]).strip()
-    if len(out) > max_chars:
-        out = out[:max_chars].rsplit(" ", 1)[0] + "."
-    return out
+    out_text = " ".join(sentences[:max_sentences]).strip()
+    if len(out_text) > max_chars:
+        out_text = out_text[:max_chars].rsplit(" ", 1)[0] + "."
+    return out_text
 
 
 def pieces(text: str, limit: int = 600) -> list[str]:

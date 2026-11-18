@@ -65,6 +65,7 @@ class Face:
     accent: tuple[int, int, int] | None = None
     text: str = ""  # kind "text": words wrapped over several lines (menu options, transcripts); kind "session": the name
     outline: tuple[int, int, int] | None = None  # coloured outline, e.g. the selected session
+    keep_start: bool = False  # kind "text" that does not fit: keep its beginning (default: its end, for transcripts)
     stats: dict | None = None  # kind "stats": {"h5": pct, "d7": pct, "ctx": pct, "cost": usd}; any may be None
 
 
@@ -203,7 +204,7 @@ def wrap_words(d, text: str, f, max_w: float) -> list[str]:
     return lines + ([cur] if cur else [])
 
 
-def _paragraph(d, text: str, cx: float, top: float, bottom: float, max_w: float, u: float, colour) -> None:
+def _paragraph(d, text: str, cx: float, top: float, bottom: float, max_w: float, u: float, colour, keep_start: bool = False) -> None:
     """Centre wrapped text in the area, in the largest size at which it fits."""
     text = (text or "").strip()
     if not text:
@@ -217,7 +218,10 @@ def _paragraph(d, text: str, cx: float, top: float, bottom: float, max_w: float,
         if (len(lines) * line_h <= bottom - top + 2 * u and whole) or size == sizes[-1]:
             break
     room = max(1, int((bottom - top + 2 * u) // line_h))
-    if len(lines) > room:  # keep the end: for a running transcript the newest words matter
+    if len(lines) > room and keep_start:  # e.g. a permission rule: what it starts with must be visible
+        lines = lines[:room]
+        lines[-1] = lines[-1][:-1] + "…"
+    elif len(lines) > room:  # keep the end: for a running transcript the newest words matter
         lines = lines[-room:]
         lines[0] = "…" + lines[0]
     y = (top + bottom) / 2 - (len(lines) - 1) * line_h / 2
@@ -367,7 +371,8 @@ def _render_key(face: Face, size, phase: float) -> Image.Image:
     elif face.kind == "bars":
         _level_bars(d, face.spark, cx, top + 2 * u, bottom - 2 * u, W, u, colour)
     elif face.kind == "text":
-        _paragraph(d, face.text, cx, top, bottom, W - 8 * u, u, TEXT if face.status is None or face.solid else colour)
+        _paragraph(d, face.text, cx, top, bottom, W - 8 * u, u, TEXT if face.status is None or face.solid else colour,
+                   face.keep_start)
     elif face.kind == "icon":
         if face.icon:
             icons.draw(d, face.icon, cx, mid, min(bottom - top, 34 * u) * 0.86, colour, 2.6 * u)

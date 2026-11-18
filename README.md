@@ -56,8 +56,10 @@ Login Items.
 
 Put your keys into the file `~/.config/decktate/.env`:
 
-    DEEPGRAM_API_KEY=...       # dictation
-    ELEVENLABS_API_KEY=...     # voice
+    # dictation
+    DEEPGRAM_API_KEY=...
+    # voice
+    ELEVENLABS_API_KEY=...
 
 Then quit and reopen Decktate. Without the Deepgram key there is no talk key;
 without the ElevenLabs key the Mac's own voice speaks. An ElevenLabs key

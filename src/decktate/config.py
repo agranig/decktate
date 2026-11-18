@@ -94,8 +94,10 @@ def load_env(home: Path = HOME) -> list[str]:
             continue
         key, value = line.split("=", 1)
         value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-            value = value[1:-1]
+        if value[:1] in ("'", '"') and value.find(value[0], 1) > 0:
+            value = value[1:value.find(value[0], 1)]  # "value" # a note: what is inside the quotes, whatever follows
+        else:
+            value = value.replace("\t#", " #").split(" #", 1)[0].strip()  # value   # a note
         os.environ.setdefault(key.strip(), value)
         names.append(key.strip())
     return names

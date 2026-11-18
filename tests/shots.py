@@ -48,8 +48,6 @@ def picture(board, key: int = KEY, gap: int | None = None, pad: int | None = Non
 
 def main(out: Path) -> list[Path]:
     out.mkdir(parents=True, exist_ok=True)
-    for old in out.glob("*.png"):
-        old.unlink()
     r = Rig(Path(tempfile.mkdtemp()), hold_s=30)
     paths = []
 

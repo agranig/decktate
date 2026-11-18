@@ -229,10 +229,9 @@ def run_app(cfg: Config, sim: bool = False, sim_port: int = 8766) -> int:
 
         while not stop.is_set():
             t = time.monotonic()
-            try:
-                board.tick()
-            except Exception as exc:  # e.g. the deck was unplugged
-                print(f"board: {type(exc).__name__}: {exc}", file=sys.stderr)
+            problem = board.step()  # e.g. the deck was unplugged: nothing is held meanwhile
+            if problem:
+                print(f"board: {problem}", file=sys.stderr)
                 time.sleep(1)
             time.sleep(max(0.0, 1 / 14 - (time.monotonic() - t)))
 
@@ -287,7 +286,8 @@ def run_app(cfg: Config, sim: bool = False, sim_port: int = 8766) -> int:
             state = install.installed(cfg)
             sessions = hub.ordered()
             cur = hub.current()
-            item("Stream Deck simulator" if sim else "Stream Deck connected")
+            item("Stream Deck simulator" if sim else "No Stream Deck: requests are asked in the terminal"
+                 if not board._answers or not board._deck_ok else "Stream Deck connected")
             menu.addItem_(AppKit.NSMenuItem.separatorItem())
             item(f"{len(sessions)} session{'s' if len(sessions) != 1 else ''}" if sessions else "No Claude Code sessions")
             for s in sessions:  # click: talk to it (the same as tapping its key)

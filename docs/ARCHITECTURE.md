@@ -149,7 +149,16 @@ and at once when it is selected; the others every six seconds.
 - The server listens on loopback only and requires a token
   (`~/.config/decktate/token`, created on first run, mode 600).
 - "Always allow" rules are stored for the session only.
-- Every decision is appended to `audit.jsonl`.
+- Every decision is appended to `audit.jsonl` (redacted, readable by its owner only).
+- A decision applies to the request that was on the keys when the key went
+  down; if that request is gone, nothing is decided. "Always" grants exactly
+  the one rule shown on the key.
+- The files that contain the token (`settings.json`, the status line script)
+  are written without widening their permissions.
+- The simulator accepts key presses only with the secret in the address it
+  prints, from its own page.
+- With no deck, or a deck that was unplugged, nothing is held: Claude Code
+  asks in the terminal.
 - API keys live in `~/.config/decktate/.env` and are never logged.
 
 ## Files in `~/.config/decktate`
@@ -178,7 +187,7 @@ permissions again. It is a menu-bar-only app (`LSUIElement`).
 ## Commands
 
     uv run decktate                 # run in the terminal (Ctrl+C quits)
-    uv run decktate --sim           # no deck: the board as a web page on http://127.0.0.1:8766/
+    uv run decktate --sim           # no deck: the board as a web page (the address is printed, with its secret)
     uv run decktate app             # run as the menu bar app
     uv run decktate install-app     # create Decktate.app
     uv run decktate doctor          # check deck, Claude Code, hooks, audio, keys
