@@ -1455,6 +1455,7 @@ def test_activity_log_says_what_happened_without_the_words(tmp_path):
     r.tap(MIC)
     r.tap(DISCARD)
     log = (tmp_path / "activity.log").read_text()
+    assert "session keys: marketing, -, - | talking to: marketing" in log   # the assignment as it was when debug was switched on
     for part in ("log level: debug", "hook UserPromptSubmit from marketing [abcdef12] -> working", "screen of marketing: {'mode': 'plan'",
                  "key 10 down on page main: talk to", "key 10 up after", "tap: listening hands-free", "key 12 down on page main: discard"):
         assert part in log, part

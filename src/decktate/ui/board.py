@@ -868,7 +868,8 @@ class Board:
             rank = {s.id: n for n, s in enumerate(order)}
             last = max(range(len(self._slots)), key=lambda i: rank.get(self._slots[i], -1))
             self._slots[last] = cur.id
-        if self._slots != self._slots_logged:
+        if self.cfg.log_level == "debug" and self._slots != self._slots_logged:
+            # remembered only while debugging: when debug is switched on, the current assignment is written first
             self._slots_logged = list(self._slots)
             self.note("session keys: " + ", ".join(self.name_of(alive[sid]) if sid in alive else "-" for sid in self._slots)
                       + f" | talking to: {self.name_of(cur) if cur else '-'}", debug=True)
@@ -1269,6 +1270,7 @@ class Board:
         def log_level():
             cfg.log_level = "info" if cfg.log_level == "debug" else "debug"
             cfg.save()
+            self._slots_logged, self._seen_before = [], {}  # debug starts with the state as it is now
             self.note(f"log level: {cfg.log_level}")
             self.toast(f"log: {'debug' if cfg.log_level == 'debug' else 'normal'}")
 
