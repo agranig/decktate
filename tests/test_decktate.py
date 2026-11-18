@@ -1355,34 +1355,64 @@ def test_btw_answer_is_read_out_and_its_view_is_closed_before_typing(tmp_path):
     tall = "▔" * 40 + "\n    line one of a long answer\n    line two\n  c to copy · f to fork · Esc to close\n"
     assert read_screen(tall)["btw"] == {"question": "", "answer": "line one of a long answer\nline two"}   # question scrolled away
     assert read_screen("    tail of the answer\n  c to copy · f to fork · Esc to close")["btw"]["answer"] == "tail of the answer"
+    # the same words in the conversation, with the prompt below them, are not the view: no Esc, nothing read out
+    told = "⏺ The side view shows: c to copy · f to fork · Esc to close\n" + SCREEN % ("", "? for shortcuts")
+    assert read_screen(told)["btw"] is None
+    # a "/btw ..." line inside the answer is not the question
+    example = BTW_VIEW % "Use the following command:\n    /btw what is 3+3?\n    and read the answer."
+    assert read_screen(example)["btw"] == {"question": "what is 2+2?",
+                                           "answer": "Use the following command:\n/btw what is 3+3?\nand read the answer."}
 
     r = Rig(tmp_path)
     r.hub.handle({"hook_event_name": "SessionStart", "session_id": "a", "cwd": "/w/a"})
     a = r.hub.sessions["a"]
     said = len(r.speaker.said)
+    look = lambda n=1: [r.board._watch(a) for _ in range(n)]         # noqa: E731
     r.screens["a"] = BTW_VIEW % "2 + 2"                             # the answer is still being written
-    r.board._watch(a)
-    assert len(r.speaker.said) == said
+    look()
     r.screens["a"] = BTW_VIEW % "2 + 2 is 4."
-    r.board._watch(a)
-    assert len(r.speaker.said) == said                              # it changed since the last look: wait
-    r.board._watch(a)                                               # the same twice: it is complete
+    look(2)
+    assert len(r.speaker.said) == said                              # it changed, then was seen unchanged once: wait
+    look()                                                          # unchanged twice in a row: it has settled
     assert r.speaker.said[-1] == "a, by the way: 2 + 2 is 4."
-    r.board._watch(a)
+    look(3)
     assert len(r.speaker.said) == said + 1                          # said once
+    r.screens["a"] = BTW_VIEW % "2 + 2\n    is 4."                  # the window is resized: the same words on other lines
+    look(4)
+    assert len(r.speaker.said) == said + 1                          # not read again
+    r.screens["a"] = BTW_VIEW % "2 + 2 is 4. And 3 + 3 is 6."       # more text follows
+    look(3)
+    assert r.speaker.said[-1] == "And 3 + 3 is 6." and len(r.speaker.said) == said + 2   # only what was added
 
     r.hold(MIC, 1.0)                                                # dictating while that view is open:
     assert r.typed == [("escape", ""), ("text", "please add tests for the parser")]   # Esc closes it, then the text
     r.screens["a"] = SCREEN % ("", "? for shortcuts")               # the view is gone
-    r.board._watch(a)
+    look()
     r.hold(MIC, 1.0)
     assert r.typed[2:] == [("text", "please add tests for the parser")]               # no Esc: that would interrupt Claude
-    r.screens["a"] = BTW_VIEW % "2 + 2 is 4."                       # the same question again later: read out again
-    r.board._watch(a), r.board._watch(a)
-    assert len(r.speaker.said) == said + 2
+    r.screens["a"] = told                                           # Claude merely mentions the view's hint line
+    r.hold(MIC, 1.0)
+    assert r.typed[3:] == [("text", "please add tests for the parser")]               # still no Esc
+    said = len(r.speaker.said)
+    r.screens["a"] = BTW_VIEW % "2 + 2 is 4."                       # the same question asked again later: read out again
+    look(3)
+    assert len(r.speaker.said) == said + 1
+
+    r.screens["a"] = SCREEN % ("", "? for shortcuts")
+    look()
+    r.advance(3)
+    r.tap(MIC)                                                      # a dictation is running (hands-free) ...
+    r.screens["a"] = BTW_VIEW % "An answer that arrives meanwhile."
+    look(4)
+    assert len(r.speaker.said) == said + 1                          # ... the answer waits: the microphone would record it
+    r.tap(DISCARD)
+    look()
+    assert r.speaker.said[-1] == "a, by the way: An answer that arrives meanwhile."
     r.cfg.speech.speak_on_stop = False                              # answers are switched to silent: this one too
+    r.screens["a"] = SCREEN % ("", "? for shortcuts")
+    look()
     r.screens["a"] = BTW_VIEW % "Something else."
-    r.board._watch(a), r.board._watch(a)
+    look(4)
     assert len(r.speaker.said) == said + 2
 
 
