@@ -1442,6 +1442,9 @@ def test_activity_log_says_what_happened_without_the_words(tmp_path):
     assert "parser" not in log                                     # what was said is not in there
     import stat
     assert stat.S_IMODE((tmp_path / "activity.log").stat().st_mode) == 0o600
+    (tmp_path / "activity.log").chmod(0o644)                       # a log that was restored or made by hand, readable by all
+    r.board.note("again")
+    assert stat.S_IMODE((tmp_path / "activity.log").stat().st_mode) == 0o600   # is made private at the next line
     assert "key " not in log and "hook " not in log                # normal level: no keys, no hook events
     r.advance(3)
     r.tap(SETTINGS)
