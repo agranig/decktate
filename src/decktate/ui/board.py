@@ -154,6 +154,7 @@ class Board:
         self.page_no = 0  # page within the sessions / commands lists
         self.take = None  # the dictation in progress
         self.take_for = ""  # prompt | reason | test
+        self.take_pending = None  # for a spoken reason: the request being rejected
         self.take_target: str | None = None  # the session a dictated prompt goes to: fixed when the key goes down
         self._take_ready = False  # the "go" chime was played
         self._latched: float | None = None  # dictation started with a tap: it runs until the key is tapped again (since when)
@@ -167,6 +168,12 @@ class Board:
         self.review: str | None = None  # dictated text waiting to be sent or discarded
         self.menu: dict = {}  # progress through the questions of the pending menu
         self.injected: list[tuple[str, str, str]] = []  # (session, what, payload), for tests and the log
+        self._shown: dict[int, Key] = {}  # the keys as they were drawn last
+        self._guard = getattr(deck, "guard", None) or threading.RLock()
+        self._action_state: tuple = ()  # what decides the keys' actions; a change is reported to the deck
+        self._typing: queue.Queue = queue.Queue()  # terminal input waiting to be typed, in order
+        if not sync:  # exactly one worker, started here: two could type a text and its Enter in the wrong order
+            threading.Thread(target=self._type_loop, daemon=True, name="decktate-typing").start()
         self._toast: tuple[str, Status, float] | None = None
         self._events: queue.Queue = queue.Queue()
         self._down: dict | None = None
@@ -175,14 +182,20 @@ class Board:
         self._levels: list[float] = []  # recent microphone levels, one per tick, while listening
         self._volume: tuple[float, int | None] | None = None  # (read at, system volume in percent)
         deck.set_brightness(cfg.brightness)
-        deck.on_key(lambda key, pressed: self._events.put((key, pressed)))
+        # The key under the finger is looked up the moment the press arrives, not when it is processed: by then
+        # the deck may show something else.
+        deck.on_key(lambda key, pressed: self._events.put((key, pressed, self._shown.get(key) if pressed else None)))
         self._load_detached()
         self._load_layout()
         self._load_stats()
         hub.subscribe(self._on_event)
         if not sync:
             threading.Thread(target=self._watch_loop, daemon=True, name="decktate-watch").start()
-        hub.set_attached(True)
+        # a simulator that only stands in for a missing deck must not hold requests: nobody may be looking at it
+        self._answers = not getattr(deck, "stand_in", False)
+        self._deck_ok = True
+        self._alive_asked = -1e9
+        hub.set_attached(self._answers)
 
     # -- speech --------------------------------------------------------------
     def _muted(self, s: Session) -> bool:
@@ -201,6 +214,11 @@ class Board:
     def muted(self) -> bool:
         """The computer's volume is at zero: nothing is spoken (and no voice is fetched for nothing)."""
         return self.system_volume() == 0
+
+    def say_about(self, s: Session, text: str) -> None:
+        """Speak something a session said or asked. A muted project is never spoken, whoever asks for it."""
+        if not self._muted(s):
+            self.say(text)
 
     def say(self, text: str, cache: bool = False) -> None:
         if self.speaker and not self.muted:
@@ -282,22 +300,23 @@ class Board:
         self.note(f"shown: {text!r} ({status.value})" if logged is None else f"shown: {logged} ({status.value})")
         self._toast = (text, status, self.clock() + seconds)
 
-    def _type(self, what: str, payload: str = "", session: str | None = None) -> None:
-        """Type into a session's terminal (the selected one unless given): what = text | escape | shift_tab | enter."""
+    def _type(self, what: str, payload: str = "", session: str | None = None, done: Callable[[], None] | None = None) -> None:
+        """Type into a session's terminal (the selected one unless given): what = text | escape | shift_tab | enter.
+        done: called once it has been typed. Nothing is reported as sent, and nothing is counted as queued,
+        before that: if typing fails, the error is what the deck shows."""
         s = self.hub.sessions.get(session) if session else self.hub.current()
         if not s:
             return self.toast("no session", Status.FAIL)
         self.injected.append((s.id, what, payload))
         where = f"{self.name_of(s)} [{s.id[:8]}]"
-        if what == "text" and s.state in BUSY and payload.split(" ", 1)[0] not in TALK_COMMANDS:
-            self._queued[s.id] = (s.turns, self.clock())  # Claude is busy: the text waits in its queue
-            if not self.sync:  # once it is typed, look at the screen whether it really is queued
-                threading.Timer(1.2, self.watch_now, args=(s.id,)).start()
-        elif what in ("ctrl_enter", "escape"):
-            self._queued.pop(s.id, None)
-            self._screen_queued.discard(s.id)
 
         def run():
+            if self.hub.sessions.get(s.id) is not s:
+                # it ended or was detached while this waited its turn: its terminal tab may hold something else now
+                return self.toast("session is gone", Status.FAIL, 4)
+            # Is Claude in a turn, and which one? As it is right before typing: an earlier text in the line may
+            # just have started one, and then this text goes into the queue.
+            busy, turn = s.state in BUSY, s.turns
             try:
                 inj = self._injector_for(s.id, s.terminal)
                 self.note(f"typing {what}" + (f" ({len(payload)} characters)" if what == "text" else "")
@@ -311,26 +330,52 @@ class Board:
                 inj.send_text(payload) if what == "text" else inj.key(what)
                 self.note(f"typed {what} into {where}")
             except InjectError as exc:
-                self.toast(str(exc), Status.FAIL, 4)
+                return self.toast(str(exc), Status.FAIL, 4)
+            except Exception as exc:
+                return self.toast(type(exc).__name__, Status.FAIL, 4)
+            if what == "text" and busy and s.turns == turn and payload.split(" ", 1)[0] not in TALK_COMMANDS:
+                self._queued[s.id] = (turn, self.clock())  # Claude is busy, in that same turn: the text waits in its queue
+                if not self.sync:  # now that it is typed, look at the screen whether it really is queued
+                    threading.Timer(1.2, self.watch_now, args=(s.id,)).start()
+            elif what in ("ctrl_enter", "escape"):
+                self._queued.pop(s.id, None)
+                self._screen_queued.discard(s.id)
+            if done:
+                done()
+
+        if self.sync:
+            return run()
+        # One at a time, in order: a text and its Enter are two steps with a pause between them, and two
+        # dictations typed at once would end up as one prompt with a stray Enter.
+        self._typing.put(run)
+
+    def _type_loop(self) -> None:
+        while True:
+            job = self._typing.get()
+            if self._closed:
+                continue  # Decktate is shutting down: nothing is typed any more
+            try:
+                job()
             except Exception as exc:
                 self.toast(type(exc).__name__, Status.FAIL, 4)
 
-        run() if self.sync else threading.Thread(target=run, daemon=True).start()
-
-    def _decide(self, verdict: str, message: str = "") -> None:
-        s = self.hub.current()
-        if s and self.hub.decide(s.id, verdict, message):
+    def _decide(self, verdict: str, session: str, pending, message: str = "") -> None:
+        """Decide the request that was on the keys when the key went down: that session, that request.
+        If it has gone meanwhile (answered in the terminal, replaced by a new one), nothing is decided."""
+        if self.hub.decide(session, verdict, message, expect=pending):
             if self.speaker:
                 self.speaker.chime("no" if verdict == "deny" else "ok")
             self.toast({"allow": "approved", "always": "always", "deny": "rejected"}[verdict],
                        Status.FAIL if verdict == "deny" else Status.OK)
+        else:
+            self.toast("request is gone", Status.WARN)
 
     def _select(self, s: Session) -> None:
         text = self.describe_session(s)  # before select() clears the "done" state
         self.hub.select(s.id)
         self.note(f"selected {self.name_of(s)} [{s.id[:8]}]")
         self.watch_now(s.id)  # what is its mode right now?
-        self.say(text)
+        self.say_about(s, text)
 
     # -- which sessions ------------------------------------------------------
     def _look(self, now: float, force: bool = False) -> None:
@@ -370,6 +415,9 @@ class Board:
         except Exception:
             text = None
         if not text:
+            # no longer readable: what was seen before says nothing about now
+            self._screen_read.pop(s.id, None)
+            self._screen_queued.discard(s.id)
             return
         seen = read_screen(text)
         self._screen_read[s.id] = self.clock()
@@ -671,11 +719,18 @@ class Board:
         return Key(face, tap=lambda: self._attach(r), hold=lambda: self._open_menu(r.id))
 
     # -- dictation -----------------------------------------------------------
-    def _talk_start(self, purpose: str) -> None:
+    def _talk_start(self, purpose: str, pending=None, session: str | None = None) -> bool:
+        """Start a dictation. Returns whether it started (the key that asked may only end a take it started).
+        pending, session: for a spoken reason, the request that is being rejected and the session it belongs to
+        (the one whose keys were shown, which need not be the selected one any more)."""
         if not self._new_take:
             return self.toast("no speech key", Status.FAIL)
         if self._sending:
             return self.toast("one moment", Status.WARN)
+        if self.take:
+            # one take at a time: a second one would replace the first, which would then keep streaming the
+            # microphone with nothing left on the deck to end or drop it
+            return self.toast("already listening", Status.WARN)
         if self.speaker and self.speaker.speaking:
             self.speaker.stop()  # or the microphone would record the voice
         cur = self.hub.current()
@@ -684,8 +739,10 @@ class Board:
             return self.toast(take.error or "mic failed", Status.FAIL, 4)
         self.take, self.take_for, self.review, self._levels = take, purpose, None, []
         # whatever happens on the deck while you talk, the words go to the session that was selected when you started
-        self.take_target, self._take_ready, self._latched = (cur.id if cur else None), False, None
+        self.take_target, self._take_ready, self._latched = session or (cur.id if cur else None), False, None
         self.note(f"listening ({purpose}) for {self.name_of(cur) if cur else 'no session'}")
+        self.take_pending = pending
+        return True
 
     def _talk_latch(self) -> None:
         """The key was tapped, not held: keep listening, hands free, until it is tapped again."""
@@ -705,7 +762,7 @@ class Board:
         take, self.take, self._latched = self.take, None, None
         if not take:
             return
-        purpose, target = self.take_for, self.take_target
+        purpose, target, pending = self.take_for, self.take_target, self.take_pending
         if self.speaker:
             self.speaker.chime("stop")
         self._sending = purpose
@@ -717,16 +774,16 @@ class Board:
                 text, take.error = "", type(exc).__name__
             finally:
                 self._sending = ""
-            self._heard(purpose, target, text, take.error)
+            self._heard(purpose, target, text, take.error, pending)
 
         run() if self.sync else threading.Thread(target=run, daemon=True).start()
 
-    def _heard(self, purpose: str, target: str | None, text: str, error: str) -> None:
+    def _heard(self, purpose: str, target: str | None, text: str, error: str, pending=None) -> None:
         self.note(f"heard {len(text.split())} words ({purpose})" + (f", error: {error}" if error else ""))
         if error and not text:
             return self.toast(error, Status.FAIL, 4)
         if purpose == "reason":
-            self._decide("deny", text)
+            self._decide("deny", target or "", pending, text)  # the request the reason was spoken for
         elif purpose == "test":
             # the microphone test shows what it heard on the deck; the log only gets how much that was
             self.toast(text or "heard nothing", Status.OK if text else Status.WARN, 4,
@@ -737,8 +794,7 @@ class Board:
             s = self.hub.sessions.get(target) if target else None
             if not s:
                 return self.toast("session is gone", Status.FAIL, 4)
-            self._type("text", f"{purpose} {text}", s.id)
-            self.toast(f"asked {self.name_of(s)}")
+            self._type("text", f"{purpose} {text}", s.id, done=lambda: self.toast(f"asked {self.name_of(s)}"))
             if not self.sync:  # the answer comes on the screen: start looking for it
                 threading.Timer(1.5, self.watch_now, args=(s.id,)).start()
             self._go("main")
@@ -748,14 +804,17 @@ class Board:
             s = self.hub.sessions.get(target) if target else None
             if not s:
                 return self.toast("session is gone", Status.FAIL, 4)
-            self._type("text", text, s.id)  # sent as soon as the key is released
-            self.toast(f"sent to {self.name_of(s)}")
+            # sent as soon as the key is released; "sent" is shown once it really has been typed
+            self._type("text", text, s.id, done=lambda: self.toast(f"sent to {self.name_of(s)}"))
 
     def _send_review(self) -> None:
+        if not self.review:
+            return
+        s = self.hub.sessions.get(self.take_target) if self.take_target else None
+        if not s:  # its session ended or was detached: keep the text, do not hand it to another conversation
+            return self.toast("session is gone", Status.FAIL, 4)
         text, self.review = self.review, None
-        if text:
-            self._type("text", text, self.take_target if self.take_target in self.hub.sessions else None)
-            self.toast("sent")
+        self._type("text", text, s.id, done=lambda: self.toast(f"sent to {self.name_of(s)}"))
 
     # -- menus ---------------------------------------------------------------
     def _menu_state(self, s: Session) -> dict:
@@ -766,18 +825,31 @@ class Board:
     def _question_index(self, s: Session) -> int:
         return self._menu_state(s)["index"] if s.pending else 0
 
-    def _menu_pick(self, s: Session, option: int) -> None:
-        m = self._menu_state(s)
-        q = s.pending.questions[m["index"]]
+    def _menu_gone(self, s: Session, p, index: int) -> bool:
+        """The question these keys were drawn for is no longer the one being asked (answered in the terminal,
+        replaced by another request, or the request has moved on to its next question): the keys do nothing
+        then, least of all answer a question nobody saw."""
+        if s.pending is p and self.menu.get("pending") is p and self.menu.get("index") == index:
+            return False
+        self.toast("question is gone", Status.WARN)
+        return True
+
+    def _menu_pick(self, s: Session, p, index: int, option: int) -> None:
+        if self._menu_gone(s, p, index):
+            return
+        m = self.menu
+        q = p.questions[m["index"]]
         if q.get("multiSelect"):
             m["picked"] ^= {option}
         else:
             m["picked"] = {option}
-            self._menu_confirm(s)
+            self._menu_confirm(s, p, index)
 
-    def _menu_confirm(self, s: Session) -> None:
-        m = self._menu_state(s)
-        questions = s.pending.questions
+    def _menu_confirm(self, s: Session, p, index: int) -> None:
+        if self._menu_gone(s, p, index):
+            return
+        m = self.menu
+        questions = p.questions
         q = questions[m["index"]]
         labels = [o.get("label", "") for i, o in enumerate(q.get("options") or []) if i in m["picked"]]
         if not labels:
@@ -786,8 +858,8 @@ class Board:
         m["picked"] = set()
         if m["index"] + 1 < len(questions):
             m["index"] += 1
-            self.say(self.describe_session(s))
-        elif self.hub.answer(s.id, m["answers"]):
+            self.say_about(s, self.describe_session(s))
+        elif self.hub.answer(s.id, m["answers"], expect=p):
             if self.speaker:
                 self.speaker.chime("ok")
             self.toast("answered")
@@ -979,15 +1051,19 @@ class Board:
         p = cur.pending if cur and cur.pending and cur.pending.kind == "permission" else None
         stt = self._new_take is not None
         if p:
+            sid = cur.id  # the keys act on this session and this request, whatever is selected when they fire
             keys[6] = Key(Face(kind="icon", icon="check", status=Status.OK, label="approve", solid=True),
-                          tap=lambda: self._decide("allow"), colour=COLORS[Status.OK])
+                          tap=lambda: self._decide("allow", sid, p), colour=COLORS[Status.OK])
             keys[5] = Key(Face(kind="icon", icon="cross", status=Status.FAIL, label="reject", solid=True,
                                caption="hold: why" if stt else ""),
-                          tap=lambda: self._decide("deny"),
-                          talk=(lambda: self._talk_start("reason"), self._talk_finish) if stt else None)
+                          tap=lambda: self._decide("deny", sid, p),
+                          talk=(lambda: self._talk_start("reason", p, sid), self._talk_finish) if stt else None)
             if p.always_label:
-                keys[7] = Key(Face(kind="text", text=p.always_label, label="always", status=Status.WARN),
-                              confirm=lambda: self._decide("always"), colour=COLORS[Status.WARN])
+                # the rule that will be granted, from its start (the tool and the command must be visible);
+                # a tap reads the whole rule out, the hold grants it
+                keys[7] = Key(Face(kind="text", text=p.always_label, label="always", status=Status.WARN, keep_start=True),
+                              tap=lambda: self.say_about(cur, f"Always allow {p.always_label}"),
+                              confirm=lambda: self._decide("always", sid, p), colour=COLORS[Status.WARN])
         elif cur and cur.state not in (State.IDLE, State.DONE, State.WAITING, State.ERROR):
             # nothing to approve: the reject key's place is free for "stop", shown only while the session is busy
             keys[5] = Key(Face(kind="icon", icon="stop", status=Status.FAIL, label="interrupt"), tap=lambda: self._type("escape"))
@@ -1087,8 +1163,9 @@ class Board:
                 elif self._sending == cmd.strip():
                     items.append(Key(Face(kind="icon", icon="send", label="sending", status=Status.OK)))
                 else:
-                    ok = bool(cur) and stt
-                    items.append(Key(Face(kind="text", text=cmd.strip(), label="hold: ask" if ok else "no speech key",
+                    ok = bool(cur) and stt and not self.take  # not while another dictation is running
+                    items.append(Key(Face(kind="text", text=cmd.strip(),
+                                          label="hold: ask" if ok else "listening" if self.take else "no speech key",
                                           status=Status.OK if ok else None, disabled=not ok),
                                      tap=(lambda: self.toast("hold and ask", Status.WARN)) if ok else None,
                                      talk=(lambda c=cmd.strip(): self._talk_start(c), self._talk_finish) if ok else None))
@@ -1126,27 +1203,30 @@ class Board:
                 for i in range(4)}
 
     def _menu(self, s: Session) -> dict[int, Key]:
+        p = s.pending  # the keys below belong to this question and to no other
         m = self._menu_state(s)
-        questions = s.pending.questions
-        q = questions[m["index"]]
+        questions = p.questions
+        at = m["index"]  # ... and to this one of its questions
+        q = questions[at]
         options = q.get("options") or []
         multi = bool(q.get("multiSelect"))
         slots = [1, 2, 3, 5, 6, 7, 8, 10, 11, 12, 13]
         count = f" {m['index'] + 1}/{len(questions)}" if len(questions) > 1 else ""
         keys = {0: Key(Face(kind="text", text=q.get("header") or q.get("question", ""), label="question" + count,
-                            status=Status.WARN, solid=True), tap=lambda: self.say(self.describe_session(s)))}
+                            status=Status.WARN, solid=True), tap=lambda: self.say_about(s, self.describe_session(s)))}
         for i, opt in enumerate(options[: len(slots)]):
             picked = i in m["picked"]
             keys[slots[i]] = Key(Face(kind="text", text=opt.get("label", ""), label=f"option {i + 1}",
                                       status=Status.OK if picked else None, solid=picked),
-                                 tap=lambda i=i: self._menu_pick(s, i))
+                                 tap=lambda i=i: self._menu_pick(s, p, at, i))
         keys[4] = Key(Face(kind="icon", icon="check", status=Status.OK, label="confirm", solid=multi and bool(m["picked"]),
                            disabled=not (multi and m["picked"]), caption=f"{len(m['picked'])} picked" if multi else ""),
-                      tap=(lambda: self._menu_confirm(s)) if multi and m["picked"] else None)
+                      tap=(lambda: self._menu_confirm(s, p, at)) if multi and m["picked"] else None)
         keys[9] = Key(Face(kind="icon", icon="speaker", label="read out", accent=ACCENT),
-                      tap=lambda: self.say(self.describe_session(s)))
+                      tap=lambda: self.say_about(s, self.describe_session(s)))
         keys[14] = Key(Face(kind="icon", icon="back", label="in terminal", status=Status.FAIL),
-                       tap=lambda: (self.hub.hand_back(s.id, "cancelled on the deck"), self.toast("in terminal", Status.WARN)))
+                       tap=lambda: self._menu_gone(s, p, at) or (self.hub.hand_back(s.id, "cancelled on the deck"),
+                                                               self.toast("in terminal", Status.WARN)))
         return keys
 
     def _stats(self, cur: Session | None) -> dict[int, Key]:
@@ -1382,18 +1462,28 @@ class Board:
             return "(empty)"
         return face.label or face.text or face.value or face.icon or face.kind
 
-    def _process_input(self, now: float, keys: dict[int, Key]) -> None:
+    def _process_input(self, now: float) -> None:
         while True:
             try:
-                index, pressed = self._events.get_nowait()
+                index, pressed, shown = self._events.get_nowait()
             except queue.Empty:
                 break
             if pressed:
+                if self._down and self._down["talking"]:
+                    # a key is held to talk: another key must not take its place, or the release of the talk key
+                    # would no longer be recognised and the microphone would stay open
+                    continue
                 # speech is not cut off by using the deck: only the "quiet" key (and starting to dictate) stops it
-                self._down = {"index": index, "key": keys.get(index) or Key(), "t0": now, "fired": False,
+                self._down = {"index": index, "key": shown or Key(), "t0": now, "fired": False,
                               "talking": False, "silenced": False}
                 face = self._down["key"].face
                 self.note(f"key {index} down on page {self.page}: {self._key_name(face)}", debug=True)
+                k = self._down["key"]
+                if k.talk and not k.tap:
+                    # a key that only talks starts recording right here, as the press is seen: so the first
+                    # word is not lost, and a tap that is over before the next look still starts a recording.
+                    # "talking" only if it really started: the release must not end somebody else's take.
+                    self._down["talking"] = bool(k.talk[0]())
             elif self._down and self._down["index"] == index:
                 d, self._down = self._down, None
                 k: Key = d["key"]
@@ -1408,11 +1498,11 @@ class Board:
         d = self._down
         if d and not d["fired"]:
             k, held = d["key"], (now - d["t0"]) * 1000
-            # a key that only talks starts recording the moment it goes down, so the first word is not lost;
-            # a key that also has a tap (reject) waits until it is clear that this is a hold
-            if k.talk and not d["talking"] and held >= (PTT_MS if k.tap else 0):
-                d["talking"] = True
-                k.talk[0]()
+            # a key that also has a tap (reject) starts recording once it is clear that this is a hold
+            if k.talk and not d["talking"] and not d.get("refused") and held >= PTT_MS:
+                d["talking"] = bool(k.talk[0]())
+                d["refused"] = not d["talking"]  # e.g. another dictation is running: do not try again, do not tap either
+                d["fired"] = d["refused"]
             elif k.confirm and held >= self.cfg.hold_ms + self.cfg.confirm_ms:
                 d["fired"] = True
                 k.confirm()
@@ -1444,27 +1534,89 @@ class Board:
                 self._take_ready = True
                 if self.speaker:
                     self.speaker.chime("start")  # the microphone delivers sound: go
-        keys = self.keys()
-        self._process_input(now, keys)
-        keys = self.keys()
-        size = self.deck.key_size
-        prog = self.confirm_progress(now)
-        for index in range(self.deck.key_count):
-            key = keys.get(index)
-            img = render_key(key.face if key else None, size, now)
-            if prog and prog[0] == index:
-                img = snake(img, prog[1], key.colour if key else TEXT)
-            raw = img.tobytes()
-            if raw != self._sent[index]:
-                self._sent[index] = raw
-                self.deck.set_key_image(index, img)
+        # A press is for the key as it was on the deck when the finger went down (see on_key above), not for what
+        # the keys would be now: a request can be replaced between two looks, and the press must not act on the new one.
+        self._process_input(now)
+        # From here to the last key, nobody may press: the deck's guard (the simulator's web page uses it)
+        # makes "what the keys do" and "what the keys show" change together.
+        with self._guard:
+            with self.hub._lock:
+                # the keys and the state they are reported under are taken in one look at the sessions: a hook
+                # that replaces a request in between would otherwise pair the old keys with the new state
+                keys = self.keys()
+                cur = self.hub.current()
+                state = (self.page, self.topic, self.page_no, self.menu_for, cur.id if cur else None,
+                         id(cur.pending) if cur and cur.pending else 0,
+                         self.menu.get("index") if cur and cur.pending else None,
+                         bool(self.take), self._latched is not None, self.review is not None, tuple(self._slots))
+            # Tell the deck when keys may now do something else than before, even if they look the same (a new
+            # request with the same wording). The simulator's web page needs this to refuse a click made on an
+            # older state; pictures alone do not say it, and a blinking key changes them without any such change.
+            if state != self._action_state:
+                self._action_state = state
+                if hasattr(self.deck, "actions"):
+                    self.deck.actions += 1
+            size = self.deck.key_size
+            prog = self.confirm_progress(now)
+            for index in range(self.deck.key_count):
+                key = keys.get(index)
+                img = render_key(key.face if key else None, size, now)
+                if prog and prog[0] == index:
+                    img = snake(img, prog[1], key.colour if key else TEXT)
+                raw = img.tobytes()
+                if raw != self._sent[index]:
+                    self.deck.set_key_image(index, img)
+                    self._sent[index] = raw  # only once it is really on the key: a failed write is tried again
+                # what this key does is published only now that its picture is on the deck
+                if key:
+                    self._shown[index] = key
+                else:
+                    self._shown.pop(index, None)
         self._save_layout()
+
+    def step(self) -> str:
+        """One tick that survives a deck that stopped answering (unplugged). Returns '' or what went wrong.
+        A deck that cannot be written to cannot answer a request either: while it is gone nothing is held,
+        so Claude Code asks in the terminal; when it works again, requests are held again."""
+        try:
+            now = self.clock()
+            if now - self._alive_asked >= 1:  # also while nothing changes on the keys: no write would notice
+                self._alive_asked = now
+                if not self.deck.alive():
+                    raise ConnectionError("the deck is not connected")
+            self.tick()
+        except Exception as exc:
+            if self._deck_ok:
+                self._deck_ok = False
+                self.hub.set_attached(False)
+                # a key that was held may never report its release now: do not leave the microphone open.
+                # The same goes for presses that are still waiting to be looked at: after the deck is back,
+                # a "talk key down" from before would start a recording that nothing ends.
+                self._down = None
+                while True:
+                    try:
+                        self._events.get_nowait()
+                    except queue.Empty:
+                        break
+                if self.take:
+                    self._talk_discard("deck is gone")
+            # every key must be written again before the deck counts as back: a tick that happens to have
+            # nothing to draw would otherwise pass for a recovery without having touched the device
+            self._sent = [None] * self.deck.key_count
+            return f"{type(exc).__name__}: {exc}"
+        if not self._deck_ok:
+            self._deck_ok = True
+            self._sent = [None] * self.deck.key_count
+            self.hub.set_attached(self._answers)
+        return ""
 
     def run(self, fps: float = 14) -> None:
         try:
             while True:
                 t = time.monotonic()
-                self.tick()
+                problem = self.step()
+                if problem:
+                    time.sleep(1)
                 time.sleep(max(0.0, 1 / fps - (time.monotonic() - t)))
         except KeyboardInterrupt:
             pass

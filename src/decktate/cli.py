@@ -47,8 +47,10 @@ def open_deck(args, cfg: Config):
             print(f"deck: {info['type']} (serial {info['serial']}, firmware {info['firmware']})")
             return deck
         except DeckNotFound as exc:
-            print(f"{exc}; using the simulator", file=sys.stderr)
+            print(f"{exc}; showing the board in the simulator only. Requests are asked in the terminal: "
+                  "start with --sim to answer them in the simulator.", file=sys.stderr)
     deck = SimDeck()
+    deck.stand_in = not args.sim  # nobody asked for it: it must not hold requests that nobody can answer
     print("simulator:", deck.serve(args.sim_port, "127.0.0.1"))
     return deck
 
@@ -266,9 +268,12 @@ def main(argv: list[str] | None = None) -> None:
     say = sub.add_parser("say", help="speak a sentence (tests the voice)")
     say.add_argument("text", nargs="*")
     say.set_defaults(fn=cmd_say)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # `decktate` and `decktate --sim` mean `decktate run ...`: put the command in before parsing,
+    # or its options would be rejected as unknown
+    if not any(a in sub.choices for a in argv) and not any(a in ("-h", "--help", "--version") for a in argv):
+        argv = ["run"] + argv
     args = ap.parse_args(argv)
-    if not args.cmd:
-        args = ap.parse_args((argv or sys.argv[1:]) + ["run"])
     config_mod.load_env()
     try:
         sys.exit(args.fn(args))

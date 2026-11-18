@@ -67,12 +67,15 @@ class Pending:
 
     @property
     def always_rules(self) -> list[dict]:
-        """What "always allow" would add, restricted to this session."""
-        out = []
+        """What "always allow" adds: exactly one rule, the one shown on the key, for this session only.
+        Claude Code may suggest several rules at once; granting more than the key shows would be a
+        permission the user never saw, so only the first one is taken."""
         for s in self.suggestions:
             if isinstance(s, dict) and s.get("type") == "addRules" and s.get("behavior", "allow") == "allow":
-                out.append({**s, "destination": "session"})
-        return out
+                rules = [r for r in (s.get("rules") or []) if isinstance(r, dict)]
+                if rules:
+                    return [{**s, "rules": rules[:1], "destination": "session"}]
+        return []
 
     @property
     def always_label(self) -> str:
@@ -242,15 +245,18 @@ class Hub:
                 s.state, s.activity = State.QUESTION, tool
                 emit.append("question")
             else:
-                # anything else means the session moved on: a held request is stale
+                # anything else means the session moved on: a held request is stale.
+                # (Not UserPromptSubmit: that is also reported for a prompt that is only queued while the
+                # turn, and the request, are still waiting.)
+                waiting = s.pending is not None and event == "UserPromptSubmit"
                 if s.pending and event in ("PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied",
-                                           "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"):
+                                           "Stop", "StopFailure", "SessionEnd"):
                     self._release(s)
                 if event == "SessionStart":
                     s.model = payload.get("model") or s.model
                     s.state = State.IDLE
                     emit.append("started")
-                elif event == "UserPromptSubmit":
+                elif event == "UserPromptSubmit" and not waiting:
                     s.state, s.activity, s.notice = State.WORKING, "thinking", ""
                 elif event in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
                     s.state, s.activity = State.WORKING, tool
@@ -327,12 +333,15 @@ class Hub:
             self._touch(s)
 
     # -- decisions: only ever called from a key press ------------------------
-    def decide(self, session_id: str, verdict: str, message: str = "", mode: str = "") -> bool:
-        """verdict: allow | always | deny. Returns False if nothing was pending."""
+    def decide(self, session_id: str, verdict: str, message: str = "", mode: str = "",
+               expect: Pending | None = None) -> bool:
+        """verdict: allow | always | deny. Returns False if nothing was pending.
+        expect: the request the key was showing. If the session has moved on to another request meanwhile,
+        nothing is decided: a decision must never land on a request the user did not see."""
         with self._lock:
             s = self.sessions.get(session_id)
             p = s.pending if s else None
-            if not p or p.kind != "permission":
+            if not p or p.kind != "permission" or (expect is not None and p is not expect):
                 return False
             if verdict == "deny":
                 decision = {"behavior": "deny", "message": message or "Rejected from the Stream Deck."}
@@ -354,12 +363,13 @@ class Hub:
             self._touch(s)
             return True
 
-    def answer(self, session_id: str, answers: dict[str, str]) -> bool:
-        """Answer a held AskUserQuestion. answers: question text -> label(s), comma-joined for multi-select."""
+    def answer(self, session_id: str, answers: dict[str, str], expect: Pending | None = None) -> bool:
+        """Answer a held AskUserQuestion. answers: question text -> label(s), comma-joined for multi-select.
+        expect: the question the keys were showing; another one that has taken its place is not answered."""
         with self._lock:
             s = self.sessions.get(session_id)
             p = s.pending if s else None
-            if not p or p.kind != "question":
+            if not p or p.kind != "question" or (expect is not None and p is not expect):
                 return False
             if self.audit:
                 self.audit.write("answer", s.id, cwd=s.cwd, answers=answers)

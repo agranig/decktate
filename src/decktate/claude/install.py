@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import stat
 import time
@@ -22,6 +23,7 @@ EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Post
           "PreCompact", "Stop", "StopFailure", "SessionEnd"]
 HELD = {"PermissionRequest", "PreToolUse"}  # these may wait for a key press
 MARK = "/hook"  # our hooks post to http://127.0.0.1:<port>/hook
+TOKEN_HEADER = "X-Decktate-Token"
 
 
 def settings_path() -> Path:
@@ -33,11 +35,16 @@ def _url(cfg: Config) -> str:
 
 
 def _is_ours(hook: dict) -> bool:
-    return hook.get("type") == "http" and "127.0.0.1" in hook.get("url", "") and hook.get("url", "").endswith(MARK)
+    """A hook Decktate wrote: an HTTP hook to this computer's /hook that carries Decktate's token header.
+    (The header is what tells it from someone else's local hook; the port is not checked, so that hooks
+    left over from an earlier port are replaced too.)"""
+    url = hook.get("url", "")
+    marked = any(str(name).lower() == TOKEN_HEADER.lower() for name in (hook.get("headers") or {}))
+    return hook.get("type") == "http" and "127.0.0.1" in url and url.endswith(MARK) and marked
 
 
 def hook_entry(cfg: Config, event: str) -> dict:
-    headers = {"X-Decktate-Token": cfg.token()}
+    headers = {TOKEN_HEADER: cfg.token()}
     headers.update({"-".join(p.capitalize() for p in h.split("-")): f"${{{name}}}" for h, name in ENV_HEADERS.items()
                     if name != "TTY"})
     return {
@@ -61,12 +68,35 @@ printf '%s' "$input" | {prev}
 """
 
 
+def _statusline_is_ours(cfg: Config, command: str) -> bool:
+    """Is this status line command Decktate's script? The command is shell-quoted (the path may contain spaces
+    or an apostrophe), so it is compared as the shell would read it; the plain path is how older versions wrote it."""
+    script = str(cfg.home / "statusline.sh")
+    try:
+        words = shlex.split(command or "")
+    except ValueError:
+        words = []
+    return bool(words and words[0] == script) or (bool(command) and script in command)
+
+
 def _write(path: Path, settings: dict) -> None:
     """Replace the file in one step, so Claude Code never reads a half-written settings file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".decktate-tmp")
-    tmp.write_text(json.dumps(settings, indent=2) + "\n")
+    # The file holds the hook token. It is created private and then given the mode the settings file had,
+    # never a wider one than before (a new file stays private).
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+    _write_private(tmp, json.dumps(settings, indent=2) + "\n", mode)
     os.replace(tmp, path)
+
+
+def _write_private(path: Path, text: str, mode: int = 0o600) -> None:
+    """Write a file that is never readable by others, not even for a moment (the process umask is not used)."""
+    path.unlink(missing_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.chmod(path, mode)
 
 
 def install(cfg: Config, path: Path | None = None, statusline: bool = True, backup: str = "dated") -> dict:
@@ -86,7 +116,11 @@ def install(cfg: Config, path: Path | None = None, statusline: bool = True, back
     backup = saved
     hooks = settings.setdefault("hooks", {})
     for event in EVENTS:
-        groups = [g for g in hooks.get(event, []) if not any(_is_ours(h) for h in g.get("hooks", []))]
+        groups = []
+        for group in hooks.get(event, []):  # take out our own entries only: other hooks in the same group stay
+            rest = [h for h in group.get("hooks", []) if not _is_ours(h)]
+            if rest:
+                groups.append({**group, "hooks": rest})
         groups.append({"hooks": [hook_entry(cfg, event)]})
         hooks[event] = groups
     result = {"settings": str(path), "backup": str(backup) if backup else "", "events": len(EVENTS), "statusline": ""}
@@ -94,16 +128,16 @@ def install(cfg: Config, path: Path | None = None, statusline: bool = True, back
         script = cfg.home / "statusline.sh"
         current = (settings.get("statusLine") or {}).get("command", "")
         state = cfg.home / "statusline.previous.json"
-        if str(script) not in current:  # remember what was there, once
+        if not _statusline_is_ours(cfg, current):  # remember what was there, once
             state.parent.mkdir(parents=True, exist_ok=True)
-            state.write_text(json.dumps({"statusLine": settings.get("statusLine")}))
+            _write_private(state, json.dumps({"statusLine": settings.get("statusLine")}))
             previous = current
         else:
             previous = (json.loads(state.read_text()).get("statusLine") or {}).get("command", "") if state.exists() else ""
-        script.write_text(statusline_script(cfg, previous))
-        script.chmod(script.stat().st_mode | stat.S_IXUSR)
+        _write_private(script, statusline_script(cfg, previous), 0o700)  # it contains the token: owner only
         keep = {k: v for k, v in (settings.get("statusLine") or {}).items() if k not in ("type", "command")}
-        settings["statusLine"] = {**keep, "type": "command", "command": str(script)}
+        # quoted: the path may contain spaces, and the command is run by a shell
+        settings["statusLine"] = {**keep, "type": "command", "command": shlex.quote(str(script))}
         result["statusline"] = "chained after: " + previous if previous else "installed"
     _write(path, settings)
     return result
@@ -131,7 +165,7 @@ def uninstall(cfg: Config, path: Path | None = None) -> dict:
     if not hooks:
         settings.pop("hooks", None)
     script, state = cfg.home / "statusline.sh", cfg.home / "statusline.previous.json"
-    if str(script) in (settings.get("statusLine") or {}).get("command", ""):
+    if _statusline_is_ours(cfg, (settings.get("statusLine") or {}).get("command", "")):
         previous = json.loads(state.read_text()).get("statusLine") if state.exists() else None
         if previous:
             settings["statusLine"] = previous
@@ -184,4 +218,4 @@ def installed(cfg: Config, path: Path | None = None) -> dict:
             if _is_ours(h)}
     return {"events": sorted(events), "complete": set(events) >= set(EVENTS),
             "current": urls == {_url(cfg)},  # False when the hooks still point at an old port
-            "statusline": str(cfg.home / "statusline.sh") in (settings.get("statusLine") or {}).get("command", "")}
+            "statusline": _statusline_is_ours(cfg, (settings.get("statusLine") or {}).get("command", ""))}

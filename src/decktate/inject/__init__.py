@@ -79,18 +79,20 @@ class Injector:
 class Tmux(Injector):
     name = "tmux"
 
-    def __init__(self, pane: str):
-        self.pane = pane
+    def __init__(self, pane: str, socket: str = ""):
+        # the session's own tmux server (first part of its TMUX variable): pane ids are only unique per
+        # server, so the default server could have another session's pane under the same id
+        self.pane, self.tmux = pane, ["tmux"] + (["-S", socket] if socket else [])
 
     def send_text(self, text, enter=True):
-        _run(["tmux", "send-keys", "-t", self.pane, "-l", "--", text])
+        _run(self.tmux + ["send-keys", "-t", self.pane, "-l", "--", text])
         if enter:
             time.sleep(TYPE_PAUSE)
             self.key("enter")
 
     def key(self, key):
-        _run(["tmux", "send-keys", "-t", self.pane, {"enter": "Enter", "escape": "Escape", "shift_tab": "BTab",
-                                                     "ctrl_c": "C-c", "ctrl_enter": "C-Enter"}[key]])
+        _run(self.tmux + ["send-keys", "-t", self.pane, {"enter": "Enter", "escape": "Escape", "shift_tab": "BTab",
+                                                         "ctrl_c": "C-c", "ctrl_enter": "C-Enter"}[key]])
 
 
 ITERM_SCRIPT = '''on run argv
@@ -139,17 +141,22 @@ KEYSTROKE_SCRIPT = '''on run argv
   set what to item 2 of argv
   set payload to item 3 of argv
   set ttyName to item 4 of argv
-  if appName is "Terminal" and ttyName is not "" then
+  if appName is "Terminal" then
+    -- the key must go to this session's tab and to no other: without the tab, nothing is sent
+    if ttyName is "" then error "Terminal tab not found"
+    set found to false
     tell application "Terminal"
       repeat with w in windows
         repeat with t in tabs of w
           if (tty of t) is ttyName then
             set selected of t to true
             set index of w to 1
+            set found to true
           end if
         end repeat
       end repeat
     end tell
+    if not found then error "Terminal tab not found"
   end if
   tell application appName to activate
   delay 0.25
@@ -267,7 +274,7 @@ def for_session(session_id: str, terminal: dict, which=shutil.which, tty_of=sess
     """Pick the best way to type into the terminal this session runs in."""
     term = terminal.get("TERM_PROGRAM", "")
     if terminal.get("TMUX_PANE") and which("tmux"):
-        return Tmux(terminal["TMUX_PANE"])
+        return Tmux(terminal["TMUX_PANE"], (terminal.get("TMUX") or "").split(",")[0])
     if terminal.get("KITTY_WINDOW_ID") and terminal.get("KITTY_LISTEN_ON") and which("kitty"):
         return Kitty(terminal["KITTY_WINDOW_ID"], terminal["KITTY_LISTEN_ON"])
     if terminal.get("WEZTERM_PANE") and which("wezterm"):
@@ -314,6 +321,8 @@ end run'''
 
 def screen_text(session_id: str, terminal: dict, tty_of=session_tty) -> str | None:
     """What is visible in the session's terminal tab, or None where that cannot be read."""
+    if terminal.get("TMUX") or terminal.get("TMUX_PANE"):
+        return None  # the tab shows all tmux panes: another pane's mode or queue would be taken for this session's
     try:
         if terminal.get("ITERM_SESSION_ID"):
             return _run(["osascript", "-e", ITERM_SCREEN_SCRIPT, terminal["ITERM_SESSION_ID"].split(":")[-1]]) or None
@@ -329,6 +338,9 @@ MODE_WORDS = (("accept edits on", "acceptEdits"), ("plan mode on", "plan"), ("au
               ("bypass permissions on", "bypassPermissions"), ("don't ask", "dontAsk"))
 
 
+# The two forms of Claude Code's own line: "Queued · ctrl+enter to send now", or on a narrow screen only the
+# hint. The whole line must be that: a sentence that merely ends with those words is conversation.
+_QUEUED = re.compile(r"(queued \u00b7 .*|(click|[a-z0-9+\u2318\u2303\u2325\u21e7\u21b5]{1,24}) to send now)$")
 RUNNING_WORDS = (("shells", r"\b(\d+) shells?\b"), ("monitors", r"\b(\d+) monitors?\b"),
                  ("agents", r"\b(\d+) (?:background )?agents?\b"), ("tasks", r"\b(\d+) (?:background )?tasks?\b"))
 
@@ -343,7 +355,9 @@ def read_screen(text: str) -> dict:
     every = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     lines = every[-16:]
     low = [ln.lower() for ln in lines]
-    queued = any("to send now" in ln or "queued \u00b7" in ln for ln in low)   # "Queued · ctrl+enter to send now"
+    # "Queued · ctrl+enter to send now": Claude Code's own short line, not a sentence in the conversation
+    # that happens to contain those words
+    queued = any(_QUEUED.match(ln.lstrip(" \u00b7\u2022>\u276f\u23f5\u23fa*-")) for ln in low)
     borders = [i for i, ln in enumerate(lines) if len(ln) >= 20 and set(ln) <= set("─━═")]
     box = None
     for a, b in zip(borders, borders[1:]):

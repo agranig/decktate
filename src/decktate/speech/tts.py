@@ -189,14 +189,19 @@ class Speaker:
             kind, arg, generation = self._q.get()
             if generation != self._generation:
                 continue  # superseded while waiting
+
+            def superseded(generation=generation) -> bool:
+                """stop() was called since this was queued (it may come while the player is still starting)."""
+                return generation != self._generation
+
             try:
                 if kind == "chime":
-                    self.player.play(chime(arg), RATE)
+                    self.player.play(chime(arg), RATE, superseded)
                     continue
                 text, cache = arg
                 path = self._cache_file(text)
                 if cache and path.exists():
-                    self.player.play(path.read_bytes(), RATE)
+                    self.player.play(path.read_bytes(), RATE, superseded)
                     continue
                 self._talking = True
                 # a long text is spoken piece by piece: the voice starts at once, and "quiet" ends it between pieces too
@@ -210,7 +215,7 @@ class Speaker:
                             collected.append(chunk)
                             yield chunk
 
-                    finished = self.player.play(tee(), RATE)
+                    finished = self.player.play(tee(), RATE, superseded)
                     self.error = self.player.error
                     if not finished:
                         break

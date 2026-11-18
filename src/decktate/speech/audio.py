@@ -99,8 +99,11 @@ class Player:
     def stop(self) -> None:
         self._stop.set()
 
-    def play(self, chunks, rate: int = 24000) -> bool:
-        """chunks: an int16 array, raw bytes, or an iterable of byte chunks (streamed). Blocks until done."""
+    def play(self, chunks, rate: int = 24000, cancelled=None) -> bool:
+        """chunks: an int16 array, raw bytes, or an iterable of byte chunks (streamed). Blocks until done.
+        cancelled: () -> bool, asked before and while playing. stop() alone can be missed: this method clears
+        the stop flag when it starts, so a stop that arrives just before would be forgotten."""
+        cancelled = cancelled or (lambda: False)
         sd = _sd()
         dev = pick(self.device, "output")
         if dev is None:
@@ -112,12 +115,14 @@ class Player:
             chunks = [bytes(chunks)]
         with self._lock:
             self._stop.clear()
+            if cancelled():
+                return False
             self.playing, self.error = True, ""
             try:
                 with sd.RawOutputStream(samplerate=rate, channels=1, dtype="int16", device=dev.index) as stream:
                     carry = b""
                     for chunk in chunks:
-                        if self._stop.is_set():
+                        if self._stop.is_set() or cancelled():
                             break
                         data = carry + chunk
                         carry = data[len(data) - (len(data) % 2):]
@@ -125,12 +130,12 @@ class Player:
                         if self.volume != 1.0 and data:
                             data = (np.frombuffer(data, dtype=np.int16) * self.volume).clip(-32768, 32767).astype(np.int16).tobytes()
                         for i in range(0, len(data), 4800):  # small writes so stop() takes effect quickly
-                            if self._stop.is_set():
+                            if self._stop.is_set() or cancelled():
                                 break
                             stream.write(data[i:i + 4800])
-                    if self._stop.is_set():
+                    if self._stop.is_set() or cancelled():
                         stream.abort()
-                return not self._stop.is_set()
+                return not (self._stop.is_set() or cancelled())
             except Exception as exc:
                 self.error = f"{type(exc).__name__}: {exc}"
                 return False

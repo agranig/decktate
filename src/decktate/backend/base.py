@@ -34,5 +34,10 @@ class DeckBackend(ABC):
     @abstractmethod
     def close(self) -> None: ...
 
+    def alive(self) -> bool:
+        """Is the deck still there? Asked regularly, so that an unplugged deck is noticed even while nothing
+        on it changes."""
+        return True
+
     def info(self) -> dict:
         return {"rows": self.rows, "cols": self.cols, "key_size": self.key_size}
