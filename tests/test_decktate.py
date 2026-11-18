@@ -1655,6 +1655,8 @@ def test_simulator_only_takes_key_presses_from_its_own_page(tmp_path):
     assert httpx.post(f"{base}/key/5/down?k={secret}", headers={"Host": "evil.example"}).status_code == 403
     assert httpx.get(f"{base}/").status_code == 403 and presses == []
     assert httpx.get(url).status_code == 200 and secret in httpx.get(url).text
+    page = httpx.get(url).text
+    assert "line=line.then(()=>fetch(u" in page and "send('/key/'+n+'/up'" in page   # presses and releases go out in order
     a = httpx.get(f"{base}/version?k={secret}").json()["a"]
     assert httpx.post(f"{base}/key/5/down?k={secret}&a={a}", headers={"Origin": base}).status_code == 204
     assert presses == [(5, True)]

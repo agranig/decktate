@@ -171,10 +171,12 @@ def _page(deck: SimDeck) -> str:
 <div><div id=d><img id=i src="/deck.png?k={deck.secret}"></div><p>click = tap, press and hold = hold</p></div>
 <script>
 const d=document.getElementById('d'),G={GAP*2},W={w*2},H={h*2},K='?k={deck.secret}';
+// one request after the other, in the order of the pointer events: a release must not overtake its press
+let line=Promise.resolve();const send=u=>{{line=line.then(()=>fetch(u,{{method:'POST'}})).catch(()=>{{}})}};
 for(let n=0;n<{deck.key_count};n++){{const k=document.createElement('div');k.className='k';
  k.style.left=(G+(n%{deck.cols})*(W+G))+'px';k.style.top=(G+Math.floor(n/{deck.cols})*(H+G))+'px';
- k.onpointerdown=()=>fetch('/key/'+n+'/down'+K+'&a='+shown,{{method:'POST'}});
- k.onpointerup=k.onpointerleave=e=>{{if(e.type=='pointerup'||e.buttons)fetch('/key/'+n+'/up'+K,{{method:'POST'}})}};
+ k.onpointerdown=()=>send('/key/'+n+'/down'+K+'&a='+shown);
+ k.onpointerup=k.onpointerleave=e=>{{if(e.type=='pointerup'||e.buttons)send('/key/'+n+'/up'+K)}};
  d.appendChild(k)}}
 let v=-1,a=-1,shown=-1;const img=document.getElementById('i');
 setInterval(async()=>{{const r=await(await fetch('/version'+K)).json();

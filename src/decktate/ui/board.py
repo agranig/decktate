@@ -1536,17 +1536,21 @@ class Board:
         # A press is for the key as it was on the deck when the finger went down (see on_key above), not for what
         # the keys would be now: a request can be replaced between two looks, and the press must not act on the new one.
         self._process_input(now)
-        keys = self.keys()
         # From here to the last key, nobody may press: the deck's guard (the simulator's web page uses it)
         # makes "what the keys do" and "what the keys show" change together.
         with self._guard:
+            with self.hub._lock:
+                # the keys and the state they are reported under are taken in one look at the sessions: a hook
+                # that replaces a request in between would otherwise pair the old keys with the new state
+                keys = self.keys()
+                cur = self.hub.current()
+                state = (self.page, self.topic, self.page_no, self.menu_for, cur.id if cur else None,
+                         id(cur.pending) if cur and cur.pending else 0,
+                         self.menu.get("index") if cur and cur.pending else None,
+                         bool(self.take), self._latched is not None, self.review is not None, tuple(self._slots))
             # Tell the deck when keys may now do something else than before, even if they look the same (a new
             # request with the same wording). The simulator's web page needs this to refuse a click made on an
             # older state; pictures alone do not say it, and a blinking key changes them without any such change.
-            cur = self.hub.current()
-            state = (self.page, self.topic, self.page_no, self.menu_for, cur.id if cur else None,
-                     id(cur.pending) if cur and cur.pending else 0, self.menu.get("index") if cur and cur.pending else None,
-                     bool(self.take), self._latched is not None, self.review is not None, tuple(self._slots))
             if state != self._action_state:
                 self._action_state = state
                 if hasattr(self.deck, "actions"):
