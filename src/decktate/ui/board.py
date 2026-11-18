@@ -169,6 +169,7 @@ class Board:
         self.menu: dict = {}  # progress through the questions of the pending menu
         self.injected: list[tuple[str, str, str]] = []  # (session, what, payload), for tests and the log
         self._shown: dict[int, Key] = {}  # the keys as they were drawn last
+        self._action_state: tuple = ()  # what decides the keys' actions; a change is reported to the deck
         self._typing: queue.Queue = queue.Queue()  # terminal input waiting to be typed, in order
         if not sync:  # exactly one worker, started here: two could type a text and its Enter in the wrong order
             threading.Thread(target=self._type_loop, daemon=True, name="decktate-typing").start()
@@ -1535,6 +1536,17 @@ class Board:
         # the keys would be now: a request can be replaced between two looks, and the press must not act on the new one.
         self._process_input(now)
         keys = self.keys()
+        # Tell the deck when keys may now do something else than before, even if they look the same (a new
+        # request with the same wording). The simulator's web page needs this to refuse a click made on an
+        # older state; pictures alone do not say it, and a blinking key changes them without any such change.
+        cur = self.hub.current()
+        state = (self.page, self.topic, self.page_no, self.menu_for, cur.id if cur else None,
+                 id(cur.pending) if cur and cur.pending else 0, self.menu.get("index") if cur and cur.pending else None,
+                 bool(self.take), self._latched is not None, self.review is not None, tuple(self._slots))
+        if state != self._action_state:
+            self._action_state = state
+            if hasattr(self.deck, "actions"):
+                self.deck.actions += 1
         size = self.deck.key_size
         prog = self.confirm_progress(now)
         for index in range(self.deck.key_count):
@@ -1568,8 +1580,15 @@ class Board:
             if self._deck_ok:
                 self._deck_ok = False
                 self.hub.set_attached(False)
-                # a key that was held may never report its release now: do not leave the microphone open
+                # a key that was held may never report its release now: do not leave the microphone open.
+                # The same goes for presses that are still waiting to be looked at: after the deck is back,
+                # a "talk key down" from before would start a recording that nothing ends.
                 self._down = None
+                while True:
+                    try:
+                        self._events.get_nowait()
+                    except queue.Empty:
+                        break
                 if self.take:
                     self._talk_discard("deck is gone")
             # every key must be written again before the deck counts as back: a tick that happens to have

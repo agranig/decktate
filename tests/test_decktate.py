@@ -1655,14 +1655,16 @@ def test_simulator_only_takes_key_presses_from_its_own_page(tmp_path):
     assert httpx.post(f"{base}/key/5/down?k={secret}", headers={"Host": "evil.example"}).status_code == 403
     assert httpx.get(f"{base}/").status_code == 403 and presses == []
     assert httpx.get(url).status_code == 200 and secret in httpx.get(url).text
-    v = deck.version
-    assert httpx.post(f"{base}/key/5/down?k={secret}&v={v}", headers={"Origin": base}).status_code == 204
+    a = httpx.get(f"{base}/version?k={secret}").json()["a"]
+    assert httpx.post(f"{base}/key/5/down?k={secret}&a={a}", headers={"Origin": base}).status_code == 204
     assert presses == [(5, True)]
     from PIL import Image
-    deck.set_key_image(5, Image.new("RGB", (72, 72), "red"))        # the board draws something else ...
-    assert httpx.post(f"{base}/key/5/down?k={secret}&v={v}").status_code == 409   # ... a click on the old picture is not a press
+    deck.set_key_image(5, Image.new("RGB", (72, 72), "red"))        # a key blinks: the picture changes, what keys do does not
+    assert httpx.post(f"{base}/key/6/down?k={secret}&a={a}").status_code == 204
+    deck.actions += 1                                               # the board: a key now belongs to another request
+    assert httpx.post(f"{base}/key/5/down?k={secret}&a={a}").status_code == 409   # a click made on the old state is not a press
     assert httpx.post(f"{base}/key/5/up?k={secret}").status_code == 204           # a release always goes through
-    assert presses == [(5, True), (5, False)]
+    assert presses == [(5, True), (6, True), (5, False)]
 
 
 def test_terminal_targets_are_exact(tmp_path):
@@ -1921,3 +1923,32 @@ def test_fourth_review_round(tmp_path):
     q.board.sync = True
     q.board.tick()
     assert q.typed == [("text", "second")] and q.face(SEND).label == "send now"
+
+
+def test_fifth_review_round(tmp_path):
+    # the board tells the deck when keys may do something else, even if they look the same; blinking does not count
+    r = Rig(tmp_path)
+    t1, box1 = r.post(BASH)
+    r.board.tick()
+    a1 = r.deck.actions
+    r.advance(1.0)                                                   # the session key blinks: pictures change
+    assert r.deck.actions == a1
+    r.hub.handle({"hook_event_name": "PostToolUse", "session_id": "s1", "tool_name": "Bash"})
+    done(t1, box1)
+    t2, box2 = r.post(BASH)                                          # the same request again: the keys look exactly the same
+    r.board.tick()
+    assert r.deck.actions > a1                                       # but they belong to another request now
+    r.hub.hand_back("s1")
+    done(t2, box2)
+
+    # presses still waiting when the deck goes away are dropped with it
+    d = Rig(tmp_path / "d")
+    d.hub.handle({"hook_event_name": "SessionStart", "session_id": "a", "cwd": "/w/a"})
+    d.board.tick()
+    d.deck.press(MIC)                                                # arrives, and before it is looked at ...
+    d.deck.alive = lambda: False                                     # ... the deck is unplugged
+    d.now += 1.5
+    assert "not connected" in d.board.step()
+    d.deck.alive = lambda: True
+    d.now += 1.5
+    assert d.board.step() == "" and d.board.take is None and d.takes == []   # no recording starts from that old press

@@ -26,6 +26,7 @@ class SimDeck(DeckBackend):
         ]
         self.brightness = 60
         self.version = 0  # bumped on every image change
+        self.actions = 0  # bumped by the board whenever a key may do something else than before (see Board.tick)
         self._cb: KeyCallback | None = None
         self._lock = threading.Lock()
         self._server: ThreadingHTTPServer | None = None
@@ -116,7 +117,7 @@ class SimDeck(DeckBackend):
                     deck.snapshot(2).save(buf, "PNG")
                     self._send(200, "image/png", buf.getvalue())
                 elif self.path.startswith("/version"):
-                    self._send(200, "application/json", json.dumps({"v": deck.version}).encode())
+                    self._send(200, "application/json", json.dumps({"v": deck.version, "a": deck.actions}).encode())
                 elif self.path == "/":
                     self._send(200, "text/html", _page(deck).encode())
                 else:
@@ -134,11 +135,14 @@ class SimDeck(DeckBackend):
                 except Exception:
                     return self._send(400, "text/plain", b"bad request")
                 if what == "down":
-                    # The page says which picture it is showing. A click on a picture that is no longer current
-                    # (the board has drawn something else since) is not a press of what is there now.
-                    showing = (parse_qs(url.query).get("v") or [""])[0]
-                    if showing != str(deck.version):
-                        return self._send(409, "text/plain", b"stale: the deck has changed")
+                    # The page says for which state of the keys' actions its picture was loaded. A click made on
+                    # an older state is not a press of what is there now: the request or question behind a key
+                    # may be another one, even if the key looks the same. (The picture's own version is not
+                    # used for this: a blinking key changes it all the time without changing what keys do.)
+                    with deck._lock:
+                        current = (parse_qs(url.query).get("a") or [""])[0] == str(deck.actions)
+                    if not current:
+                        return self._send(409, "text/plain", b"stale: the keys have changed")
                     deck.press(key)
                 else:
                     deck.release(key)
@@ -162,10 +166,10 @@ def _page(deck: SimDeck) -> str:
 const d=document.getElementById('d'),G={GAP*2},W={w*2},H={h*2},K='?k={deck.secret}';
 for(let n=0;n<{deck.key_count};n++){{const k=document.createElement('div');k.className='k';
  k.style.left=(G+(n%{deck.cols})*(W+G))+'px';k.style.top=(G+Math.floor(n/{deck.cols})*(H+G))+'px';
- k.onpointerdown=()=>fetch('/key/'+n+'/down'+K+'&v='+shown,{{method:'POST'}});
+ k.onpointerdown=()=>fetch('/key/'+n+'/down'+K+'&a='+shown,{{method:'POST'}});
  k.onpointerup=k.onpointerleave=e=>{{if(e.type=='pointerup'||e.buttons)fetch('/key/'+n+'/up'+K,{{method:'POST'}})}};
  d.appendChild(k)}}
-let v=-1,shown=-1;const img=document.getElementById('i');
+let v=-1,a=-1,shown=-1;const img=document.getElementById('i');
 setInterval(async()=>{{const r=await(await fetch('/version'+K)).json();
- if(r.v!=v){{v=r.v;const want=v;img.onload=()=>{{shown=want}};img.src='/deck.png'+K+'&v='+v}}}},120);
+ if(r.v!=v||r.a!=a){{v=r.v;a=r.a;const want=r.a;img.onload=()=>{{shown=want}};img.src='/deck.png'+K+'&v='+v+'&a='+a}}}},120);
 </script>"""
