@@ -719,9 +719,10 @@ class Board:
         return Key(face, tap=lambda: self._attach(r), hold=lambda: self._open_menu(r.id))
 
     # -- dictation -----------------------------------------------------------
-    def _talk_start(self, purpose: str, pending=None) -> bool:
+    def _talk_start(self, purpose: str, pending=None, session: str | None = None) -> bool:
         """Start a dictation. Returns whether it started (the key that asked may only end a take it started).
-        pending: for a spoken reason, the request that is being rejected."""
+        pending, session: for a spoken reason, the request that is being rejected and the session it belongs to
+        (the one whose keys were shown, which need not be the selected one any more)."""
         if not self._new_take:
             return self.toast("no speech key", Status.FAIL)
         if self._sending:
@@ -738,7 +739,7 @@ class Board:
             return self.toast(take.error or "mic failed", Status.FAIL, 4)
         self.take, self.take_for, self.review, self._levels = take, purpose, None, []
         # whatever happens on the deck while you talk, the words go to the session that was selected when you started
-        self.take_target, self._take_ready, self._latched = (cur.id if cur else None), False, None
+        self.take_target, self._take_ready, self._latched = session or (cur.id if cur else None), False, None
         self.note(f"listening ({purpose}) for {self.name_of(cur) if cur else 'no session'}")
         self.take_pending = pending
         return True
@@ -1056,7 +1057,7 @@ class Board:
             keys[5] = Key(Face(kind="icon", icon="cross", status=Status.FAIL, label="reject", solid=True,
                                caption="hold: why" if stt else ""),
                           tap=lambda: self._decide("deny", sid, p),
-                          talk=(lambda: self._talk_start("reason", p), self._talk_finish) if stt else None)
+                          talk=(lambda: self._talk_start("reason", p, sid), self._talk_finish) if stt else None)
             if p.always_label:
                 # the rule that will be granted, from its start (the tool and the command must be visible);
                 # a tap reads the whole rule out, the hold grants it

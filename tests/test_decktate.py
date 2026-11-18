@@ -1954,3 +1954,18 @@ def test_fifth_review_round(tmp_path):
     d.deck.alive = lambda: True
     d.now += 1.5
     assert d.board.step() == "" and d.board.take is None and d.takes == []   # no recording starts from that old press
+
+
+def test_a_spoken_reason_rejects_the_request_it_was_spoken_for(tmp_path):
+    r = Rig(tmp_path)
+    r.hub.handle({"hook_event_name": "SessionStart", "session_id": "other", "cwd": "/w/other"})
+    t, box = r.post(BASH)                                            # a request of session s1
+    r.board._select(r.hub.sessions["s1"])
+    r.board.tick()
+    reject = r.board._shown[NO]                                      # the reject key as it is on the deck
+    r.hub.select("other")                                            # the selection moves before the hold starts
+    assert reject.talk[0]() is True                                  # hold to say why
+    assert r.board.take_target == "s1"                               # the reason belongs to the request's session
+    reject.talk[1]()
+    out = done(t, box)["hookSpecificOutput"]["decision"]
+    assert out == {"behavior": "deny", "message": "please add tests for the parser"}
