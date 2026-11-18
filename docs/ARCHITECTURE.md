@@ -165,6 +165,7 @@ and at once when it is selected; the others every six seconds.
 | `stats.json` | last reported context, cost and quota |
 | `tts-cache/` | audio of short fixed phrases |
 | `decktate.log` | output of the menu bar app |
+| `activity.log` | what was done on the deck (selected, listened, typed, shown), without the words; with `log_level: debug` also every key, hook event, screen reading and key assignment |
 
 ## The app
 

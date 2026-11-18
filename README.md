@@ -156,6 +156,12 @@ change it.
 | Voice | voice, talk speed, whether requests and answers are read out |
 | Display | brightness |
 
+The settings also show whether the hooks are installed, and a **log** key:
+tap it to switch between *normal* and *debug*. Decktate writes what it does
+to `~/.config/decktate/activity.log` (never what you said, only how much);
+*debug* adds every key press, every event from Claude Code and what it read
+from the terminal. Switch it on before reporting a problem.
+
 <p align="center"><img src="docs/screens/4-settings.png" width="420" alt="The settings: one key each for sound, microphone, voice, display and hooks"></p>
 
 ## The menu bar icon

@@ -41,6 +41,7 @@ class Config:
     hold_ms: int = 600
     confirm_ms: int = 1200
     permission_hold_s: float = 120  # how long a permission request waits for a key before the terminal takes over
+    log_level: str = "info"  # activity.log: info = what was done; debug = also every key, hook event and screen reading
     auto_hooks: bool = True  # add the hooks to Claude Code's settings on start and remove them on shutdown
     slash: list[str] = field(default_factory=lambda: ["/btw", "/compact", "/clear", "/review", "/context", "/usage", "/resume"])
     mute_projects: list[str] = field(default_factory=list)  # project paths that are never spoken
@@ -72,6 +73,7 @@ class Config:
                                             speak_on_stop=self.speech.speak_on_stop)
         raw.setdefault("audio", {}).update(input=self.audio.input, output=self.audio.output, volume=self.audio.volume)
         raw["brightness"] = self.brightness
+        raw["log_level"] = self.log_level
         path.write_text(yaml.safe_dump(raw, sort_keys=False))
 
 
