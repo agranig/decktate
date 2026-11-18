@@ -13,6 +13,7 @@ In settings the right column is: faster, back, slower (talk speed).
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -116,6 +117,9 @@ class Board:
         self._alive = alive or discover_mod.alive
         self._screen_of = screen_of or screen_text  # (session id, terminal) -> the text on its screen, or None
         self._screen_queued: set[str] = set()  # sessions whose screen says a message is waiting to be sent
+        self._seen_before: dict[str, dict] = {}  # debugging: the last screen reading that was logged per session
+        self._slots_logged: list = []
+        hub.trace = lambda line: self.note(line, debug=True)
         self._btw_seen: dict[str, dict] = {}  # session -> the /btw answer on its screen: text, how often seen unchanged, what was spoken
         self._background: dict[str, dict] = {}  # session -> what its screen says runs in the background: {"shells": 2, ...}
         self._watch_now = threading.Event()
@@ -251,7 +255,26 @@ class Board:
             self.speaker.chime("tick")
 
     # -- actions -------------------------------------------------------------
+    def note(self, what: str, debug: bool = False) -> None:
+        """One line in <home>/activity.log about something done on the deck: which session was selected, a
+        dictation started or ended, what was typed where and whether that worked. It is there to find out
+        afterwards why something did not arrive. No dictated or typed text is written, only its length.
+        debug=True: only written at log level "debug" (every key, hook event, screen reading, key assignment)."""
+        if debug and self.cfg.log_level != "debug":
+            return
+        try:
+            path = self.cfg.home / "activity.log"
+            if path.exists() and path.stat().st_size > 2_000_000:  # keep it small: start over
+                path.unlink()
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a") as f:
+                stamp = time.strftime("%Y-%m-%d %H:%M:%S") + f".{int(time.time() * 1000) % 1000:03d}"
+                f.write(f"{stamp} {'  ' if debug else ''}{what}\n")
+        except OSError:
+            pass
+
     def toast(self, text: str, status: Status = Status.OK, seconds: float = 2.2) -> None:
+        self.note(f"shown: {text!r} ({status.value})")
         self._toast = (text, status, self.clock() + seconds)
 
     def _type(self, what: str, payload: str = "", session: str | None = None) -> None:
@@ -260,6 +283,7 @@ class Board:
         if not s:
             return self.toast("no session", Status.FAIL)
         self.injected.append((s.id, what, payload))
+        where = f"{self.name_of(s)} [{s.id[:8]}]"
         if what == "text" and s.state in BUSY and payload.split(" ", 1)[0] not in TALK_COMMANDS:
             self._queued[s.id] = (s.turns, self.clock())  # Claude is busy: the text waits in its queue
             if not self.sync:  # once it is typed, look at the screen whether it really is queued
@@ -271,6 +295,8 @@ class Board:
         def run():
             try:
                 inj = self._injector_for(s.id, s.terminal)
+                self.note(f"typing {what}" + (f" ({len(payload)} characters)" if what == "text" else "")
+                          + f" into {where} via {inj.name}")
                 if what == "text" and self._side_view_open(s):
                     # a /btw answer is on the screen: it would swallow the first letters. Close it first.
                     inj.key("escape")
@@ -278,6 +304,7 @@ class Board:
                     if not self.sync:
                         time.sleep(0.4)
                 inj.send_text(payload) if what == "text" else inj.key(what)
+                self.note(f"typed {what} into {where}")
             except InjectError as exc:
                 self.toast(str(exc), Status.FAIL, 4)
             except Exception as exc:
@@ -296,6 +323,7 @@ class Board:
     def _select(self, s: Session) -> None:
         text = self.describe_session(s)  # before select() clears the "done" state
         self.hub.select(s.id)
+        self.note(f"selected {self.name_of(s)} [{s.id[:8]}]")
         self.watch_now(s.id)  # what is its mode right now?
         self.say(text)
 
@@ -347,6 +375,11 @@ class Board:
         if seen["running"] is not None and seen["running"] != self._background.get(s.id):
             self._background[s.id] = seen["running"]
             self.hub.version += 1
+        if self.cfg.log_level == "debug":
+            brief = {k: v for k, v in seen.items() if k != "btw"} | {"btw": bool(seen["btw"])}
+            if self._seen_before.get(s.id) != brief:
+                self._seen_before[s.id] = brief
+                self.note(f"screen of {self.name_of(s)}: {brief}", debug=True)
         if seen["queued"] != (s.id in self._screen_queued):
             (self._screen_queued.add if seen["queued"] else self._screen_queued.discard)(s.id)
             self.hub.version += 1
@@ -647,11 +680,13 @@ class Board:
         self.take, self.take_for, self.review, self._levels = take, purpose, None, []
         # whatever happens on the deck while you talk, the words go to the session that was selected when you started
         self.take_target, self._take_ready, self._latched = (cur.id if cur else None), False, None
+        self.note(f"listening ({purpose}) for {self.name_of(cur) if cur else 'no session'}")
 
     def _talk_latch(self) -> None:
         """The key was tapped, not held: keep listening, hands free, until it is tapped again."""
         if self.take:
             self._latched = self.clock()
+            self.note("tap: listening hands-free until the key is tapped again")
 
     def _talk_discard(self, why: str = "discarded") -> None:
         take, self.take, self._latched = self.take, None, None
@@ -682,6 +717,7 @@ class Board:
         run() if self.sync else threading.Thread(target=run, daemon=True).start()
 
     def _heard(self, purpose: str, target: str | None, text: str, error: str) -> None:
+        self.note(f"heard {len(text.split())} words ({purpose})" + (f", error: {error}" if error else ""))
         if error and not text:
             return self.toast(error, Status.FAIL, 4)
         if purpose == "reason":
@@ -827,6 +863,10 @@ class Board:
             rank = {s.id: n for n, s in enumerate(order)}
             last = max(range(len(self._slots)), key=lambda i: rank.get(self._slots[i], -1))
             self._slots[last] = cur.id
+        if self._slots != self._slots_logged:
+            self._slots_logged = list(self._slots)
+            self.note("session keys: " + ", ".join(self.name_of(alive[sid]) if sid in alive else "-" for sid in self._slots)
+                      + f" | talking to: {self.name_of(cur) if cur else '-'}", debug=True)
         return [alive.get(sid) if sid else None for sid in self._slots]
 
     def _stick(self, now: float) -> None:
@@ -1221,6 +1261,12 @@ class Board:
         stt = self._new_take is not None
         hearing = max(self._levels[-9:] or [0.0]) > 0.03
 
+        def log_level():
+            cfg.log_level = "info" if cfg.log_level == "debug" else "debug"
+            cfg.save()
+            self.note(f"log level: {cfg.log_level}")
+            self.toast(f"log: {'debug' if cfg.log_level == 'debug' else 'normal'}")
+
         def open_topic(name: str):
             self.topic, self._topic_direct = name, False
 
@@ -1290,6 +1336,9 @@ class Board:
                 5: Key(Face(kind="icon", icon="pass" if hooks["complete"] else "warn", label="hooks",
                             status=Status.OK if hooks["complete"] else Status.WARN,
                             caption="installed" if hooks["complete"] else "not set")),
+                # how much is written to activity.log: tap to switch. "debug" records every key, hook and screen reading.
+                6: Key(Face(value="debug" if cfg.log_level == "debug" else "normal", label="log",
+                            status=Status.WARN if cfg.log_level == "debug" else None), tap=log_level),
             })
         return keys
 
@@ -1317,6 +1366,13 @@ class Board:
         return keys
 
     # -- input ---------------------------------------------------------------
+    @staticmethod
+    def _key_name(face: Face | None) -> str:
+        """A key in words, for the log: its label, or what it shows."""
+        if face is None:
+            return "(empty)"
+        return face.label or face.text or face.value or face.icon or face.kind
+
     def _process_input(self, now: float, keys: dict[int, Key]) -> None:
         while True:
             try:
@@ -1327,9 +1383,13 @@ class Board:
                 # speech is not cut off by using the deck: only the "quiet" key (and starting to dictate) stops it
                 self._down = {"index": index, "key": keys.get(index) or Key(), "t0": now, "fired": False,
                               "talking": False, "silenced": False}
+                face = self._down["key"].face
+                self.note(f"key {index} down on page {self.page}: {self._key_name(face)}", debug=True)
             elif self._down and self._down["index"] == index:
                 d, self._down = self._down, None
                 k: Key = d["key"]
+                self.note(f"key {index} up after {(now - d['t0']) * 1000:.0f} ms"
+                          + (", was talking" if d["talking"] else "") + (", hold already fired" if d["fired"] else ""), debug=True)
                 if d["talking"] and not k.tap and (now - d["t0"]) * 1000 < TAP_MS:
                     self._talk_latch()  # a tap on a talk-only key: listen until it is tapped again
                 elif d["talking"]:

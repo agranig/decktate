@@ -136,6 +136,7 @@ class Hub:
         self.sessions: dict[str, Session] = {}
         self.selected: str | None = None
         self.limits: dict = {}  # the newest 5-hour / 7-day quota from any session (they are per account, not per session)
+        self.trace: Callable[[str], None] | None = None  # debugging: told about every hook event
         self.detached: set[str] = set()  # sessions the deck was told to leave alone: their hooks pass straight through
         self.attached = False  # a deck (or simulator) is connected and can answer
         self.version = 0  # bumped on every change; the UI redraws when it moves
@@ -285,6 +286,9 @@ class Hub:
                     self.version += 1
                     emit.append("ended")
             self._touch(s)
+        if self.trace:
+            self.trace(f"hook {event}" + (f" {tool}" if tool else "") + f" from {s.name} [{s.id[:8]}] -> {s.state.value}"
+                       + (", held" if hold else ""))
         for e in emit:
             self._emit(e, s)
         if hold is None:

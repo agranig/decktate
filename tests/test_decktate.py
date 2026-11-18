@@ -936,7 +936,7 @@ def test_stats_and_settings_pages(tmp_path, monkeypatch):
     assert [(r.face(k).label, r.face(k).caption) for k in (SOUND, MICROPHONE, VOICE, DISPLAY)] == [
         ("sound", "44%"), ("microphone", "Desk Mic"), ("voice", "system 1.2x"), ("display", f"{r.cfg.brightness}%")]
     assert r.face(HOOKS).label == "hooks" and r.face(BACK).label == "back"
-    assert [k for k in range(15) if r.face(k)] == [0, 1, 2, 3, 5, 9]              # nothing else: not cluttered
+    assert [k for k in range(15) if r.face(k)] == [0, 1, 2, 3, 5, 6, 9]           # nothing else: not cluttered
 
     r.tap(SOUND)                                                   # --- sound: speaker, quieter, louder, test
     assert r.board.topic == "sound" and [r.face(k).label for k in (0, 1, 2, 3)] == ["speaker", "quieter", "louder", "test"]
@@ -1427,6 +1427,38 @@ def test_btw_answer_is_read_out_and_its_view_is_closed_before_typing(tmp_path):
     r.screens["a"] = BTW_VIEW % "Something else."
     look(4)
     assert len(r.speaker.said) == said + 2
+
+
+def test_activity_log_says_what_happened_without_the_words(tmp_path):
+    r = Rig(tmp_path)
+    r.hub.handle({"hook_event_name": "SessionStart", "session_id": "abcdef123456", "cwd": "/w/marketing"})
+    r.tap(0)
+    r.hold(MIC, 1.0)
+    log = (tmp_path / "activity.log").read_text()
+    for part in ("selected marketing [abcdef12]", "listening (prompt) for marketing", "heard 6 words (prompt)",
+                 "typing text (31 characters) into marketing [abcdef12] via test", "typed text into marketing",
+                 "shown: 'sent to marketing' (ok)"):
+        assert part in log, part
+    assert "parser" not in log                                     # what was said is not in there
+    import stat
+    assert stat.S_IMODE((tmp_path / "activity.log").stat().st_mode) == 0o600
+    assert "key " not in log and "hook " not in log                # normal level: no keys, no hook events
+    r.advance(3)
+    r.tap(SETTINGS)
+    assert (r.face(6).label, r.face(6).value) == ("log", "normal")
+    r.tap(6)                                                       # switch to debug on the deck
+    assert r.cfg.log_level == "debug" and r.face(6).value == "debug" and config_mod.load(tmp_path).log_level == "debug"
+    r.tap(9)
+    r.hub.handle({"hook_event_name": "UserPromptSubmit", "session_id": "abcdef123456"})
+    r.screens["abcdef123456"] = SCREEN % ("", "⏸ plan mode on (shift+tab to cycle)")
+    r.board._watch(r.hub.sessions["abcdef123456"])
+    r.tap(MIC)
+    r.tap(DISCARD)
+    log = (tmp_path / "activity.log").read_text()
+    for part in ("log level: debug", "hook UserPromptSubmit from marketing [abcdef12] -> working", "screen of marketing: {'mode': 'plan'",
+                 "key 10 down on page main: talk to", "key 10 up after", "tap: listening hands-free", "key 12 down on page main: discard"):
+        assert part in log, part
+    assert "parser" not in log
 
 
 def test_typing_failures_show_on_the_deck_and_never_crash(tmp_path):
