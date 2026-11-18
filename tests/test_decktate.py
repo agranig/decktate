@@ -1352,6 +1352,9 @@ def test_btw_answer_is_read_out_and_its_view_is_closed_before_typing(tmp_path):
     seen = read_screen(BTW_VIEW % "2 + 2 is 4.\n    That is all.")
     assert seen["btw"] == {"question": "what is 2+2?", "answer": "2 + 2 is 4.\nThat is all."} and seen["mode"] is None
     assert read_screen(SCREEN % ("", "? for shortcuts"))["btw"] is None
+    tall = "▔" * 40 + "\n    line one of a long answer\n    line two\n  c to copy · f to fork · Esc to close\n"
+    assert read_screen(tall)["btw"] == {"question": "", "answer": "line one of a long answer\nline two"}   # question scrolled away
+    assert read_screen("    tail of the answer\n  c to copy · f to fork · Esc to close")["btw"]["answer"] == "tail of the answer"
 
     r = Rig(tmp_path)
     r.hub.handle({"hook_event_name": "SessionStart", "session_id": "a", "cwd": "/w/a"})

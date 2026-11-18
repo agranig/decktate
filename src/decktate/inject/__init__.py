@@ -377,6 +377,9 @@ def side_answer(lines: list[str]) -> dict | None:
     if end is None:
         return None
     start = next((i for i in range(end - 1, -1, -1) if lines[i].startswith("/btw")), None)
-    if start is None:
-        return {"question": "", "answer": ""}  # open, but the question has scrolled away
-    return {"question": lines[start][4:].strip(), "answer": "\n".join(lines[start + 1:end])}
+    if start is not None:
+        return {"question": lines[start][4:].strip(), "answer": "\n".join(lines[start + 1:end])}
+    # A long answer has pushed the question off the screen. What is still visible of the answer is below the
+    # view's top rule if that is on the screen, otherwise it is everything above the hint line.
+    top = next((i for i in range(end - 1, -1, -1) if len(lines[i]) >= 20 and set(lines[i]) <= set("\u2594\u2500\u2501")), -1)
+    return {"question": "", "answer": "\n".join(lines[top + 1:end])}

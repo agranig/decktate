@@ -350,8 +350,9 @@ class Board:
         before = self._btw_seen.get(s.id)
         text = (btw["question"], btw["answer"])
         if before is None or before[0] != text:
-            self._btw_seen[s.id] = (text, False)  # new or still growing: look again
-            self.watch_now(s.id)
+            # new or still growing: compare again at the next regular look, about a second later. (Not at once:
+            # the answer arrives in bursts, and a short pause between two would pass for "finished".)
+            self._btw_seen[s.id] = (text, False)
         elif not before[1]:
             self._btw_seen[s.id] = (text, True)
             if self.speaker and self.cfg.speech.speak_on_stop and not self._muted(s) and not self.muted:
