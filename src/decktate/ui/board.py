@@ -56,6 +56,18 @@ STATE_FACE = {State.IDLE: ("dots", "idle"), State.WORKING: ("running", "working"
               State.ERROR: ("fail", "error")}
 
 
+def _overlap(spoken: str, visible: str, least: int = 12) -> int:
+    """How much of the start of `visible` was already spoken: the longest beginning of it that `spoken` ends
+    with (so also all of `spoken`, if `visible` starts with it). 0 if that is shorter than `least` characters,
+    which is too little to be sure."""
+    if visible.startswith(spoken):
+        return len(spoken)
+    for n in range(min(len(spoken), len(visible)), least - 1, -1):
+        if spoken.endswith(visible[:n]):
+            return n
+    return 0
+
+
 def place(s: Session) -> str:
     """Where a session runs: its terminal tab, else its process. The same across /clear and /resume,
     which end one session and start another in the same place."""
@@ -364,10 +376,17 @@ class Board:
             return
         if self.take or self._sending or (self.speaker and self.speaker.speaking):
             return  # not while the microphone is open (it would record the voice) or something is being said: later
-        if seen["spoken"] and not text.startswith(seen["spoken"]):
-            seen["spoken"] = text  # it scrolled or was rearranged: what is new cannot be told from what was read
-            return
-        added, first = text[len(seen["spoken"]):].strip(), not seen["spoken"]
+        added, first = text, not seen["spoken"]
+        if seen["spoken"]:
+            # What is new? Normally the text read so far, plus more. If the answer has scrolled, its beginning is
+            # gone from the screen: then the end of what was read is found again at the top of what is visible
+            # now, and everything after that is new. If nothing of it can be found, nothing is said: reading the
+            # visible part again would repeat what was heard.
+            done = _overlap(seen["spoken"], text)
+            if done == 0:
+                seen["spoken"] = text
+                return
+            added = text[done:].strip()
         seen["spoken"] = text
         if added and self.speaker and self.cfg.speech.speak_on_stop and not self._muted(s) and not self.muted:
             self.speaker.speak((f"{self.name_of(s)}, by the way: " if first else "") + speakable(added))

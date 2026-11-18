@@ -1384,6 +1384,19 @@ def test_btw_answer_is_read_out_and_its_view_is_closed_before_typing(tmp_path):
     look(3)
     assert r.speaker.said[-1] == "And 3 + 3 is 6." and len(r.speaker.said) == said + 2   # only what was added
 
+    # the answer grows and scrolls: its beginning leaves the screen, the end of what was read is still at the top
+    r.screens["a"] = "    And 3 + 3 is 6. Finally 4 + 4 is 8.\n  c to copy · f to fork · Esc to close"
+    look(3)
+    assert r.speaker.said[-1] == "Finally 4 + 4 is 8." and len(r.speaker.said) == said + 3   # only the new end
+    r.screens["a"] = "    Something entirely different now.\n  c to copy · f to fork · Esc to close"
+    look(4)
+    assert len(r.speaker.said) == said + 3                          # nothing of it was read before: not guessed at
+    r.screens["a"] = BTW_VIEW % "2 + 2 is 4. And 3 + 3 is 6."
+    look(4)
+    from decktate.ui.board import _overlap
+    assert _overlap("one two three four five six", "four five six seven") == len("four five six")
+    assert _overlap("abc", "abc def") == 3 and _overlap("one two three", "three four") == 0   # too short to be sure
+
     r.hold(MIC, 1.0)                                                # dictating while that view is open:
     assert r.typed == [("escape", ""), ("text", "please add tests for the parser")]   # Esc closes it, then the text
     r.screens["a"] = SCREEN % ("", "? for shortcuts")               # the view is gone
