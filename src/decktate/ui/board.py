@@ -270,6 +270,8 @@ class Board:
                     path.unlink()
                 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
                 with os.fdopen(fd, "a") as f:
+                    if os.fstat(f.fileno()).st_mode & 0o077:  # a file that was already there, readable by others
+                        os.fchmod(f.fileno(), 0o600)
                     stamp = time.strftime("%Y-%m-%d %H:%M:%S") + f".{int(time.time() * 1000) % 1000:03d}"
                     f.write(f"{stamp} {'  ' if debug else ''}{what}\n")
         except OSError:
