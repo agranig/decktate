@@ -104,7 +104,7 @@ class Board:
         self._alive = alive or discover_mod.alive
         self._screen_of = screen_of or screen_text  # (session id, terminal) -> the text on its screen, or None
         self._screen_queued: set[str] = set()  # sessions whose screen says a message is waiting to be sent
-        self._btw_seen: dict[str, tuple[tuple[str, str], bool]] = {}  # session -> (the /btw answer on its screen, spoken)
+        self._btw_seen: dict[str, dict] = {}  # session -> the /btw answer on its screen: text, how often seen unchanged, what was spoken
         self._background: dict[str, dict] = {}  # session -> what its screen says runs in the background: {"shells": 2, ...}
         self._watch_now = threading.Event()
         self._watch_first: str | None = None
@@ -341,22 +341,36 @@ class Board:
         self._side_answer(s, seen["btw"])
 
     def _side_answer(self, s: Session, btw: dict | None) -> None:
-        """Read out the answer to a /btw question. It is only on the screen (no hook fires for it), and it
-        arrives bit by bit, so it is spoken once it has stopped changing from one look to the next."""
-        if not btw or not btw["answer"].strip():
-            if not btw:
-                self._btw_seen.pop(s.id, None)  # the view is closed
+        """Read out the answer to a /btw question. It is only on the screen (no hook fires for it) and arrives
+        bit by bit, so it is spoken once it has been the same on two looks in a row.
+
+        A view is announced once. If more text follows after that, only what was added is spoken. Text that
+        merely changed its line breaks (the window was resized) or scrolled is not read again."""
+        if not btw:
+            self._btw_seen.pop(s.id, None)  # the view is closed
             return
-        before = self._btw_seen.get(s.id)
-        text = (btw["question"], btw["answer"])
-        if before is None or before[0] != text:
-            # new or still growing: compare again at the next regular look, about a second later. (Not at once:
-            # the answer arrives in bursts, and a short pause between two would pass for "finished".)
-            self._btw_seen[s.id] = (text, False)
-        elif not before[1]:
-            self._btw_seen[s.id] = (text, True)
-            if self.speaker and self.cfg.speech.speak_on_stop and not self._muted(s) and not self.muted:
-                self.speaker.speak(f"{self.name_of(s)}, by the way: {speakable(btw['answer'])}")
+        text = " ".join(btw["answer"].split())  # without line breaks: a reflow is not a change
+        if not text:
+            return
+        seen = self._btw_seen.get(s.id)
+        if seen is None or (btw["question"] and seen["question"] != btw["question"]):
+            self._btw_seen[s.id] = {"question": btw["question"], "text": text, "same": 0, "spoken": ""}
+            return
+        if text != seen["text"]:
+            seen["text"], seen["same"] = text, 0  # still growing: wait until it settles
+            return
+        seen["same"] += 1
+        if seen["same"] < 2 or text == seen["spoken"]:
+            return
+        if self.take or self._sending or (self.speaker and self.speaker.speaking):
+            return  # not while the microphone is open (it would record the voice) or something is being said: later
+        if seen["spoken"] and not text.startswith(seen["spoken"]):
+            seen["spoken"] = text  # it scrolled or was rearranged: what is new cannot be told from what was read
+            return
+        added, first = text[len(seen["spoken"]):].strip(), not seen["spoken"]
+        seen["spoken"] = text
+        if added and self.speaker and self.cfg.speech.speak_on_stop and not self._muted(s) and not self.muted:
+            self.speaker.speak((f"{self.name_of(s)}, by the way: " if first else "") + speakable(added))
 
     def _side_view_open(self, s: Session) -> bool:
         """Is a /btw answer open in the session's terminal right now? Looks at the screen this moment, because

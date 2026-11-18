@@ -366,20 +366,25 @@ def read_screen(text: str) -> dict:
 def side_answer(lines: list[str]) -> dict | None:
     """The answer to a /btw side question, while Claude Code shows it:
 
+        ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
           /btw what is 2+2?
             2 + 2 is 4.
           c to copy · f to fork · Esc to close
 
     It is on the screen only: no hook reports it. While it is open the keyboard belongs to this view (the next
-    keys close it or copy, they are not typed), so it has to be closed with Esc before anything is typed."""
-    end = next((i for i in range(len(lines) - 1, -1, -1) if "esc to close" in lines[i].lower()
-                and ("to copy" in lines[i].lower() or "to fork" in lines[i].lower())), None)
-    if end is None:
+    keys close it or copy, they are not typed), so it has to be closed with Esc before anything is typed.
+
+    The view is the last thing on the screen: its hint line is the bottom line. The same words further up,
+    with the prompt below them, are conversation (e.g. Claude explaining this very view) and mean nothing.
+    The question is the line right under the view's top rule; a "/btw ..." line anywhere else is part of the answer."""
+    if not lines:
         return None
-    start = next((i for i in range(end - 1, -1, -1) if lines[i].startswith("/btw")), None)
-    if start is not None:
-        return {"question": lines[start][4:].strip(), "answer": "\n".join(lines[start + 1:end])}
-    # A long answer has pushed the question off the screen. What is still visible of the answer is below the
-    # view's top rule if that is on the screen, otherwise it is everything above the hint line.
-    top = next((i for i in range(end - 1, -1, -1) if len(lines[i]) >= 20 and set(lines[i]) <= set("\u2594\u2500\u2501")), -1)
-    return {"question": "", "answer": "\n".join(lines[top + 1:end])}
+    end, hint = len(lines) - 1, lines[-1].lower()
+    if "esc to close" not in hint or not ("to copy" in hint or "to fork" in hint):
+        return None
+    top = next((i for i in range(end - 1, -1, -1) if len(lines[i]) >= 20 and set(lines[i]) <= set("\u2594")), None)
+    if top is not None and top + 1 < end and lines[top + 1].startswith("/btw"):
+        return {"question": lines[top + 1][4:].strip(), "answer": "\n".join(lines[top + 2:end])}
+    # The top of the view is not on the screen: a long answer has pushed it off. Everything above the hint
+    # line is then what is visible of the answer.
+    return {"question": "", "answer": "\n".join(lines[(top + 1 if top is not None else 0):end])}
